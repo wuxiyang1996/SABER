@@ -36,16 +36,63 @@ from __future__ import annotations
 import os
 import sys
 
-# ---- GPU memory budget ------------------------------------------------
-# Must be set *before* JAX / PyTorch are imported.
-# Pi0.5 (JAX) needs ~6.2 GiB; limit JAX pre-allocation to 25% (~8 GiB)
-# so the remaining ~24 GiB is available for vLLM (Qwen attack agent).
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.25")
+# ---- Model / data cache directory --------------------------------------
+# Redirect all model downloads (openpi checkpoints, HuggingFace, etc.)
+# to the project directory instead of ~/.cache (which may have limited
+# quota on shared clusters).
+_PROJECT_CACHE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", ".cache"
+)
+os.environ.setdefault("OPENPI_DATA_HOME", os.path.realpath(_PROJECT_CACHE))
+os.environ.setdefault("HF_HOME", os.path.join(os.path.realpath(_PROJECT_CACHE), "huggingface"))
+
+# ---- Headless rendering (must be set before MuJoCo / PyOpenGL import) --
+# On cluster nodes without a display server, MuJoCo must use EGL
+# (GPU-accelerated offscreen) or osmesa (CPU software).  EGL is
+# strongly preferred when GPUs are available.
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
+# ---- Multi-GPU memory budget ------------------------------------------
+# With 4× L40S (48 GB each) we split models across GPUs:
+#   GPU 0  →  Pi0.5 VLA model  (JAX, ~6–10 GiB)
+#   GPU 1,2,3 → Qwen attack agent (vLLM / ART, 3-way tensor parallel)
+#
+# IMPORTANT: Do NOT set CUDA_VISIBLE_DEVICES here.
+# `import art` triggers `import torch` which initialises the CUDA
+# driver.  If only 1 GPU is visible at that point, PyTorch locks in
+# num_gpus=1 and later vLLM module imports crash when they try to
+# probe device ≥ 1.
+#
+# Instead we leave all GPUs visible during import time.  JAX is
+# pinned to the VLA GPU via jax.device_put (already done in
+# vla_rollout.py).  vLLM gets its GPU restriction via
+# CUDA_VISIBLE_DEVICES set just before ART spawns its subprocess.
+
+# Default GPU layout (overridable via CLI --vla_gpu / --attack_gpus or env vars).
+def _early_resolve_vla_gpu() -> int:
+    for i, tok in enumerate(sys.argv):
+        if tok == "--vla_gpu" and i + 1 < len(sys.argv):
+            return int(sys.argv[i + 1])
+        if tok.startswith("--vla_gpu="):
+            return int(tok.split("=", 1)[1])
+    return int(os.environ.get("VLA_GPU", "0"))
+
+_VLA_GPU = _early_resolve_vla_gpu()
+_ATTACK_GPUS = os.environ.get("ATTACK_GPUS", "1")
+
+# JAX memory settings — don't pre-allocate; allocate on demand up to 90%.
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
+os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 import argparse
 import asyncio
 import json
 import logging
+
+# ---- PyTorch 2.6+ compat: LIBERO init-state files contain numpy arrays.
+# We patched libero/benchmark/__init__.py to use weights_only=False.
+# (torch.load changed its default in PyTorch 2.6.)
 
 # Ensure project root is importable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -154,24 +201,58 @@ async def train(args: argparse.Namespace) -> None:
     logger.info("  Stealth weight:   %s", args.stealth_weight)
     logger.info("=" * 60)
 
-    # --- Load Pi0.5 VLA model (once) ----------------------------------
-    logger.info("Loading Pi0.5 VLA model ...")
-    # Lazy import to avoid loading heavy deps when just parsing args
-    _adv_vla_dir = os.path.realpath(
-        os.path.join(os.path.dirname(__file__), "..", "adv_agent_vla", "libero_rollouts"),
+    # --- Resolve GPU layout from CLI -----------------------------------
+    vla_gpu = args.vla_gpu
+    attack_gpus = args.attack_gpus
+
+    logger.info("GPU layout: VLA → GPU %d  |  Attack agent → GPU(s) %s",
+                vla_gpu, attack_gpus)
+
+    # --- Load Pi0.5 VLA model (once) on the VLA GPU -------------------
+    # All GPUs are visible (we did NOT restrict CUDA_VISIBLE_DEVICES).
+    # JAX sees them all; we select the VLA GPU by index.
+    import jax
+    jax_devices = jax.devices("gpu")
+    logger.info(
+        "JAX sees %d GPU(s): %s  (VLA will use gpu:%d)",
+        len(jax_devices), jax_devices, vla_gpu,
     )
-    if _adv_vla_dir not in sys.path:
-        sys.path.insert(0, _adv_vla_dir)
+    if vla_gpu >= len(jax_devices):
+        raise RuntimeError(
+            f"--vla_gpu={vla_gpu} but JAX only sees {len(jax_devices)} GPU(s)"
+        )
+    vla_jax_device = jax_devices[vla_gpu]
+
+    logger.info("Loading Pi0.5 VLA model on GPU %d ...", vla_gpu)
+    # Lazy import to avoid loading heavy deps when just parsing args
+    _libero_rollouts_dir = os.path.realpath(
+        os.path.join(os.path.dirname(__file__), "libero_rollouts"),
+    )
+    if _libero_rollouts_dir not in sys.path:
+        sys.path.insert(0, _libero_rollouts_dir)
     from pi05_libero_model import Pi05LiberoModel
 
-    vla_model = Pi05LiberoModel(
-        train_config_name=args.vla_config_name,
-        checkpoint_path=args.vla_checkpoint,
-        action_horizon=50,
-        replan_steps=5,
+    # Load VLA model with JAX default device pinned to the VLA GPU
+    with jax.default_device(vla_jax_device):
+        vla_model = Pi05LiberoModel(
+            train_config_name=args.vla_config_name,
+            checkpoint_path=args.vla_checkpoint,
+            action_horizon=50,
+            replan_steps=5,
+        )
+    set_vla_model(vla_model, jax_device=vla_jax_device)
+    logger.info("Pi0.5 VLA model loaded on GPU %d.", vla_gpu)
+
+    # --- Restrict CUDA_VISIBLE_DEVICES for the ART subprocess ---------
+    # The parent process's CUDA driver is already initialised with all
+    # GPUs visible — changing the env var won't affect it.  But ART's
+    # LocalBackend spawns the UnslothService in a *child* process
+    # (via mp_actors) which gets a fresh CUDA init and will only see
+    # the GPUs listed here.
+    os.environ["CUDA_VISIBLE_DEVICES"] = attack_gpus
+    logger.info(
+        "Set CUDA_VISIBLE_DEVICES=%s for ART subprocess (vLLM).", attack_gpus,
     )
-    set_vla_model(vla_model)
-    logger.info("Pi0.5 VLA model loaded.")
 
     # --- Build scenarios ----------------------------------------------
     train_scenarios = build_scenarios(
@@ -186,15 +267,32 @@ async def train(args: argparse.Namespace) -> None:
     )
     logger.info("Built %d training scenarios.", len(train_scenarios))
 
-    # --- ART model setup ----------------------------------------------
+    # --- ART model setup (vLLM on attack GPU(s)) ----------------------
+    # Count how many GPUs were assigned to the attack agent
+    n_attack_gpus = len(attack_gpus.split(","))
+    logger.info(
+        "Configuring attack model: %d GPU(s), mem_util=%.2f",
+        n_attack_gpus, args.gpu_memory_utilization,
+    )
+
+    # gpu_memory_utilization goes into engine_args (the vLLM
+    # AsyncEngineArgs), NOT init_args (unsloth model loader).
+    # Putting it in init_args caused vLLM to silently use its own
+    # default of 0.9 for gpu_memory_utilization.
+    #
+    # tensor_parallel_size is left at 1 (default).  Qwen2.5-3B (~6 GiB)
+    # fits comfortably on a single L40S.  TP > 1 triggers vLLM
+    # multiprocessing which hits a pydantic-core pickling bug.
     attack_model = art.TrainableModel(
         name=args.model_name,
         project=args.project_name,
         base_model=args.base_model,
         _internal_config=art.dev.InternalModelConfig(
             init_args=art.dev.InitArgs(
-                gpu_memory_utilization=0.6,
                 max_seq_length=4096,
+            ),
+            engine_args=art.dev.EngineArgs(
+                gpu_memory_utilization=args.gpu_memory_utilization,
             ),
         ),
     )
@@ -309,6 +407,28 @@ def main():
     parser.add_argument(
         "--vla_checkpoint", type=str, default=None,
         help="Path to Pi0.5 checkpoint (None = auto-download base model).",
+    )
+
+    # --- GPU layout ---
+    parser.add_argument(
+        "--vla_gpu", type=int, default=int(os.environ.get("VLA_GPU", "0")),
+        help="GPU index for the Pi0.5 VLA model (JAX).  Default: 0.",
+    )
+    parser.add_argument(
+        "--attack_gpus", type=str, default=os.environ.get("ATTACK_GPUS", "1"),
+        help=(
+            "Comma-separated GPU indices for the vLLM attack agent.  "
+            "Qwen2.5-3B fits on a single GPU; use '1' (default).  "
+            "Multi-GPU TP is not supported due to pydantic pickling bug."
+        ),
+    )
+    parser.add_argument(
+        "--gpu_memory_utilization", type=float, default=0.70,
+        help=(
+            "Fraction of GPU memory vLLM may use on each attack GPU.  "
+            "PyTorch/CUDA context can consume ~10 GiB overhead, so 0.70 "
+            "is a safe default for 48 GiB L40S GPUs.  Default: 0.70."
+        ),
     )
 
     # --- ART / training config ---

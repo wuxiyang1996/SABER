@@ -36,6 +36,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+# Headless rendering — must be set before MuJoCo / PyOpenGL are imported.
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
 import numpy as np
 import weave
 
@@ -44,10 +48,9 @@ import weave
 # ---------------------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_ROOT = os.path.dirname(_THIS_DIR)
-_ADV_AGENT_VLA = os.path.realpath(os.path.join(_PROJECT_ROOT, "..", "adv_agent_vla"))
-_LIBERO_ROLLOUTS = os.path.join(_ADV_AGENT_VLA, "libero_rollouts")
+_LIBERO_ROLLOUTS = os.path.join(_PROJECT_ROOT, "libero_rollouts")
 
-for _p in (_PROJECT_ROOT, _ADV_AGENT_VLA, _LIBERO_ROLLOUTS):
+for _p in (_PROJECT_ROOT, _LIBERO_ROLLOUTS):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
@@ -717,20 +720,39 @@ Your reward depends on the outcome relative to a clean baseline.
 # ============================================================================
 
 _vla_model = None
+_vla_jax_device = None         # JAX device for VLA inference
 _libero_env_cache: Dict[str, Any] = {}
 
 
-def set_vla_model(model) -> None:
+def set_vla_model(model, jax_device=None) -> None:
     """Register the Pi0.5 VLA model (called once during setup).
 
     Parameters
     ----------
     model : Pi05LiberoModel
         An instance of the Pi0.5 LIBERO model wrapper.
+    jax_device : jax.Device, optional
+        The JAX GPU device the VLA was loaded on.  If ``None``, the
+        current default device is used.  This is stored so that
+        rollout helpers can ensure VLA computations run on the correct
+        GPU even after ``CUDA_VISIBLE_DEVICES`` is changed for vLLM.
     """
-    global _vla_model
+    global _vla_model, _vla_jax_device
     _vla_model = model
-    logger.info("VLA model registered: %s", type(model).__name__)
+
+    if jax_device is None:
+        try:
+            import jax
+            _vla_jax_device = jax.devices("gpu")[0]
+        except Exception:
+            _vla_jax_device = None
+    else:
+        _vla_jax_device = jax_device
+
+    logger.info(
+        "VLA model registered: %s  (jax device: %s)",
+        type(model).__name__, _vla_jax_device,
+    )
 
 
 def get_vla_model():
@@ -740,6 +762,11 @@ def get_vla_model():
             "VLA model not set.  Call set_vla_model() before rollout."
         )
     return _vla_model
+
+
+def get_vla_jax_device():
+    """Retrieve the JAX device assigned to the VLA model."""
+    return _vla_jax_device
 
 
 # ============================================================================
@@ -760,11 +787,17 @@ def _make_pi05_policy_fn(
     execute ``replan_steps`` of them, then re-plan.  This closure returns
     one action at a time from the chunk, re-planning when the chunk is
     exhausted.
+
+    Note: JAX computations are pinned to the VLA device that was recorded
+    when ``set_vla_model()`` was called.  This ensures the VLA model
+    stays on its dedicated GPU even when ``CUDA_VISIBLE_DEVICES`` has
+    been changed for the vLLM/ART attack agent.
     """
     from pi05_libero_model import preprocess_image, build_libero_state
 
     action_buffer = []
     current_instruction = instruction
+    vla_device = get_vla_jax_device()
 
     def policy_fn(obs: dict, instr: str) -> Tuple[np.ndarray, str]:
         nonlocal action_buffer, current_instruction
@@ -780,6 +813,14 @@ def _make_pi05_policy_fn(
             agentview = preprocess_image(obs["agentview_image"])
             wrist = preprocess_image(obs["robot0_eye_in_hand_image"])
             state = build_libero_state(obs)
+
+            # Pin JAX inputs to the VLA device when available
+            if vla_device is not None:
+                import jax
+                agentview = jax.device_put(agentview, vla_device)
+                wrist = jax.device_put(wrist, vla_device)
+                state = jax.device_put(state, vla_device)
+
             actions = vla_model.predict(agentview, wrist, state)
             # Buffer up to replan_steps actions
             action_buffer.extend(actions[:replan_steps].tolist())
