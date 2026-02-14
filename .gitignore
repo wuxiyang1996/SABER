@@ -1,0 +1,45 @@
+# ============================================================================
+# Agent Attack Framework — .gitignore
+# ============================================================================
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ----- Environment / secrets -----
+.env
+.env.*
+*.pem
+*.key
+
+# ----- ART checkpoints & model weights (large) -----
+.art/
+
+# ----- Dataset cache (large, downloadable) -----
+.cache/
+
+# ----- Unsloth auto-generated trainer cache -----
+unsloth_compiled_cache/
+
+# ----- IDE / editor -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ----- Jupyter -----
+.ipynb_checkpoints/
+
+# ----- Logs / outputs -----
+*.log
+wandb/
+runs/
+outputs/
