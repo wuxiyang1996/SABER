@@ -1023,7 +1023,7 @@ async def vla_attack_rollout(
             "task_id": scenario.task_id,
             "episode_idx": scenario.episode_idx,
             "objective": scenario.objective.value,
-            "tool_sets": [ts.value for ts in scenario.tool_sets],
+            "tool_sets": ",".join(ts.value for ts in scenario.tool_sets),
             "instruction": instruction,
         },
     )
