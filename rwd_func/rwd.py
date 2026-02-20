@@ -1338,7 +1338,6 @@ class ObjectiveReward:
         """
         if not attack_info.attack_applied:
             return self.no_attack_penalty, {
-                "objective": self.objective.value,
                 "reward": self.no_attack_penalty,
                 "no_attack": 1,
             }
@@ -1360,7 +1359,6 @@ class ObjectiveReward:
         """
         if not attack_info.attack_applied:
             return self.no_attack_penalty, {
-                "objective": self.objective.value,
                 "reward": self.no_attack_penalty,
                 "no_attack": 1,
             }
@@ -1941,8 +1939,10 @@ def collect_libero_rollout_info(
     observation: np.ndarray,
     max_steps: int = 300,
     collect_predicates: bool = True,
-    scene_snapshot_interval: int = 10,
+    scene_snapshot_interval: int = 25,
     contact_force_threshold: float = 50.0,
+    early_stop_on_success: bool = True,
+    success_hold_steps: int = 10,
 ) -> VLARolloutInfo:
     """Run a VLA policy in a LIBERO environment and collect all reward signals.
 
@@ -1995,6 +1995,7 @@ def collect_libero_rollout_info(
     obs = observation
     done = False
     step = 0
+    _success_streak = 0
 
     while step < max_steps and not done:
         action, reasoning = policy_fn(obs, instruction)
@@ -2042,6 +2043,19 @@ def collect_libero_rollout_info(
             except Exception:
                 pass
 
+        # --- Early stop: if task is successful for `success_hold_steps`
+        #     consecutive steps, terminate early to save compute. ----------
+        if early_stop_on_success and hasattr(env, "_check_success"):
+            try:
+                if env._check_success():
+                    _success_streak += 1
+                    if _success_streak >= success_hold_steps:
+                        done = True
+                else:
+                    _success_streak = 0
+            except Exception:
+                _success_streak = 0
+
         # --- Collect full scene entity snapshot at interval ---
         if scene_snapshot_interval > 0 and step % scene_snapshot_interval == 0:
             try:
@@ -2062,7 +2076,7 @@ def collect_libero_rollout_info(
 
     info.num_steps = step
     info.task_success = bool(
-        done and hasattr(env, "_check_success") and env._check_success()
+        hasattr(env, "_check_success") and env._check_success()
     )
     info.timeout = step >= max_steps and not info.task_success
 

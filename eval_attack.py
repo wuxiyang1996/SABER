@@ -69,6 +69,7 @@ class QuestionResult:
         self.attack_em: float = 0.0
         self.tools_used: list[str] = []
         self.perturbation_length: int = 0
+        self.attacked: bool = True  # explicit label: rollout had attack agent applied
         # Derived
         self.f1_drop: float = 0.0
         self.attack_success: bool = False  # baseline correct → attack incorrect
@@ -143,7 +144,7 @@ async def run_evaluation(args: argparse.Namespace) -> None:
     # PASS 2: Attack — agent generates suffix, eval model answers
     # ================================================================
     print("-" * 70)
-    print("  PASS 2: Attack (trained agent generates adversarial suffixes)")
+    print("  PASS 2: Attack (attacked=True, trained agent generates adversarial suffixes)")
     print("-" * 70)
     t0 = time.time()
 
@@ -151,13 +152,17 @@ async def run_evaluation(args: argparse.Namespace) -> None:
     for i, (scenario, r) in enumerate(zip(scenarios, results)):
         traj = await wrapped_rollout(attack_model, scenario)
 
+        # Rollout is explicitly labeled as attacked in trajectory metadata/metrics
         r.suffix = traj.metadata.get("suffix", "")
         r.adversarial_question = traj.metadata.get("adversarial_question", "")
         r.attack_answer = traj.metadata.get("eval_answer", "")
         r.attack_f1 = traj.metrics.get("f1_adversarial", 0.0)
         r.attack_em = traj.metrics.get("em_adversarial", 0.0)
-        r.tools_used = traj.metadata.get("tools_used", [])
+        _tools_raw = traj.metadata.get("tools_used", "")
+        r.tools_used = [t.strip() for t in _tools_raw.split(",") if t.strip()] if isinstance(_tools_raw, str) else list(_tools_raw or [])
         r.perturbation_length = traj.metrics.get("perturbation_length", 0)
+        # Explicit attacked label from rollout (default True for attack pass)
+        r.attacked = traj.metadata.get("attacked", True)
 
         # F1 drop = how much worse the eval model did after the attack
         r.f1_drop = r.baseline_f1 - r.attack_f1
@@ -167,7 +172,7 @@ async def run_evaluation(args: argparse.Namespace) -> None:
 
         if (i + 1) % 10 == 0 or (i + 1) == len(scenarios):
             avg_atk_f1 = sum(r.attack_f1 for r in results if r.suffix is not None) / (i + 1)
-            print(f"  [{i+1}/{len(scenarios)}]  running attack F1: {avg_atk_f1:.3f}")
+            print(f"  [{i+1}/{len(scenarios)}]  running attack F1 (attacked=True): {avg_atk_f1:.3f}")
 
     attack_time = time.time() - t0
     print(f"  Attack pass done in {attack_time:.1f}s\n")
@@ -273,6 +278,8 @@ async def run_evaluation(args: argparse.Namespace) -> None:
             "checkpoint_step": current_step,
             "split": args.split,
             "n_questions": n,
+            "rollout_type": "attacked",
+            "attacked": True,
         },
         "summary": {
             "baseline_f1": avg_baseline_f1,
@@ -295,6 +302,8 @@ async def run_evaluation(args: argparse.Namespace) -> None:
                 "baseline_answer": r.baseline_answer,
                 "baseline_f1": r.baseline_f1,
                 "baseline_em": r.baseline_em,
+                "attacked": r.attacked,
+                "rollout_type": "attacked" if r.attacked else "baseline",
                 "suffix": r.suffix,
                 "attack_answer": r.attack_answer,
                 "attack_f1": r.attack_f1,

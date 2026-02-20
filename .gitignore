@@ -42,4 +42,5 @@ unsloth_compiled_cache/
 *.log
 wandb/
 runs/
+# ART checkpoints, vLLM logs, trajectories (do not commit)
 outputs/

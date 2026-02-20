@@ -20,6 +20,7 @@ Reference:
   https://art.openpipe.ai/integrations/langgraph-integration
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -475,6 +476,7 @@ async def attack_rollout(
     ``wrap_rollout`` (called in the trainer / eval scripts).
     """
     frozen_model = get_frozen_eval_model()
+    logger.info("HotpotQA attack rollout (attacked=True, question_id=%s)", scenario.question_id)
 
     # -- Shared mutable state for tool closures --
     state = AttackState(scenario.question)
@@ -499,11 +501,13 @@ async def attack_rollout(
         "Start by choosing an attack strategy."
     )
 
-    # -- Create trajectory (messages populated by wrap_rollout) --
+    # -- Create trajectory (messages populated by wrap_rollout). Explicitly label as attacked. --
     trajectory = art.Trajectory(
         reward=0.0,
         messages_and_choices=[],
         metadata={
+            "attacked": True,
+            "rollout_type": "attacked",
             "question_id": scenario.question_id,
             "question": scenario.question,
             "gold_answer": scenario.answer,
@@ -518,20 +522,33 @@ async def attack_rollout(
         "recursion_limit": MAX_TURNS * 2,   # each cycle ≈ agent_node + tool_node
     }
 
-    try:
-        await react_agent.ainvoke(
-            {
-                "messages": [
-                    SystemMessage(content=ATTACK_SYSTEM_PROMPT),
-                    HumanMessage(content=user_message),
-                ],
-            },
-            config=config,
-        )
-    except Exception as e:
-        logger.error("ReAct agent error: %s", e)
-        trajectory.reward = -1.0
-        return trajectory
+    _MAX_AGENT_RETRIES = 3
+    for _attempt in range(_MAX_AGENT_RETRIES):
+        try:
+            await react_agent.ainvoke(
+                {
+                    "messages": [
+                        SystemMessage(content=ATTACK_SYSTEM_PROMPT),
+                        HumanMessage(content=user_message),
+                    ],
+                },
+                config=config,
+            )
+            break
+        except Exception as e:
+            is_server_error = "500" in str(e) or "Internal Server Error" in str(e)
+            if is_server_error and _attempt < _MAX_AGENT_RETRIES - 1:
+                wait = 2 ** (_attempt + 1)
+                logger.warning(
+                    "ReAct agent HTTP 500 (attempt %d/%d), retrying in %ds: %s",
+                    _attempt + 1, _MAX_AGENT_RETRIES, wait, e,
+                )
+                await asyncio.sleep(wait)
+                config["configurable"]["thread_id"] = str(uuid.uuid4())
+                continue
+            logger.error("ReAct agent error (attacked=True): %s", e)
+            trajectory.reward = -1.0
+            return trajectory
 
     # -- Query the frozen eval model with the (perturbed) question --
     eval_answer = await frozen_model.answer(
@@ -563,6 +580,7 @@ async def attack_rollout(
     trajectory.reward = max(min(reward, 1.5), -1.0)  # clamp to [-1, 1.5]
 
     # -- Metrics for monitoring --
+    trajectory.metrics["attacked"] = 1
     trajectory.metrics["f1_adversarial"] = f1_adversarial
     trajectory.metrics["em_adversarial"] = em_adversarial
     trajectory.metrics["attack_success"] = 1.0 if em_adversarial == 0.0 else 0.0
@@ -573,6 +591,6 @@ async def attack_rollout(
     trajectory.metadata["suffix"] = state.last_suffix
     trajectory.metadata["adversarial_question"] = state.perturbed_question
     trajectory.metadata["eval_answer"] = eval_answer
-    trajectory.metadata["tools_used"] = state.tools_used
+    trajectory.metadata["tools_used"] = ", ".join(state.tools_used)
 
     return trajectory

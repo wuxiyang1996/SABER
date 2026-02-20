@@ -1,43 +1,23 @@
 # ============================================================================
-# Agent Attack Framework — Full Dependency Specification
+# Agent Attack Framework — Dependencies (pinned to libero conda env)
 # ============================================================================
 #
-# Target: Python 3.11  |  CUDA 12.8  |  RTX 5090 (32 GB)
+# Versions below match the `libero` conda environment (Python 3.11, CUDA 12).
 #
-# SETUP INSTRUCTIONS (order matters due to JAX / PyTorch coexistence):
+# RECOMMENDED: use the existing libero env and install ART + local deps:
 #
-#   1. Create conda environment:
-#        conda create -n libero python=3.11 -y
-#        conda activate libero
+#   conda activate libero
+#   pip install -e /path/to/ART
+#   pip install -r requirements.txt   # optional, to align any missing pins
 #
-#   2. Install C compiler (needed by Triton / vLLM CUDA graph compilation):
-#        conda install -c conda-forge gcc_linux-64 gxx_linux-64 -y
-#        # Then create symlinks in $CONDA_PREFIX/bin:
-#        ln -sf $CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc $CONDA_PREFIX/bin/gcc
-#        ln -sf $CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++ $CONDA_PREFIX/bin/g++
-#        ln -sf $CONDA_PREFIX/bin/gcc $CONDA_PREFIX/bin/cc
+# From scratch (order matters — JAX/PyTorch):
 #
-#   3. Install OpenGL libs (for MuJoCo headless rendering):
-#        conda install -c conda-forge libopengl mesalib -y
-#
-#   4. Install PyTorch (CUDA 12.8):
-#        pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 \
-#            --index-url https://download.pytorch.org/whl/cu128
-#
-#   5. Install pinned JAX + numpy (must come before openpi):
-#        pip install "jax[cuda12]==0.5.3" "numpy>=1.26,<2.0"
-#
-#   6. Install this requirements file:
-#        pip install -r requirements.txt
-#
-#   7. Install local editable packages (adjust paths to your machine):
-#        pip install -e /path/to/LIBERO    --no-deps
-#        pip install -e /path/to/openpi    --no-deps
-#        pip install    openpi-client      --no-deps
-#
-#   8. (Optional) Set env vars in your .env or shell:
-#        CC=$CONDA_PREFIX/bin/gcc
-#        XLA_PYTHON_CLIENT_MEM_FRACTION=0.25
+#   1. conda create -n libero python=3.11 -y && conda activate libero
+#   2. conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
+#   3. pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu128
+#   4. pip install "jax[cuda12]==0.5.3" "numpy>=1.26,<2.0"
+#   5. pip install -r requirements.txt
+#   6. pip install -e /path/to/LIBERO -e /path/to/openpi openpi-client --no-deps
 #
 # ============================================================================
 
@@ -45,10 +25,10 @@
 # 1. Core RL / training framework
 # ---------------------------------------------------------------------------
 openpipe-art[backend,langgraph]==0.5.9
-vllm==0.13.0
+vllm==0.11.2
 trl==0.24.0
 unsloth==2026.2.1
-transformers==4.57.6
+transformers==4.57.2
 
 # ---------------------------------------------------------------------------
 # 2. Agent orchestration (LangGraph / LangChain)
@@ -64,21 +44,20 @@ litellm==1.81.11
 weave==0.52.28
 
 # ---------------------------------------------------------------------------
-# 4. JAX ecosystem (for Pi0.5 VLA inference via OpenPI)
-#    NOTE: jax[cuda12] and numpy are pinned in step 5 above.
+# 4. JAX ecosystem (Pi0.5 VLA via OpenPI; install jax[cuda12] before this)
 # ---------------------------------------------------------------------------
 jaxlib==0.5.3
 flax==0.10.2
 equinox==0.13.4
-orbax-checkpoint            # version resolved by flax
+orbax-checkpoint==0.11.13
 chex==0.1.86
 jaxtyping==0.2.36
 augmax==0.4.1
 
 # ---------------------------------------------------------------------------
-# 5. Robotics / simulation (MuJoCo, robosuite, LIBERO deps)
+# 5. Robotics / simulation (MuJoCo, robosuite, LIBERO)
 # ---------------------------------------------------------------------------
-mujoco==3.4.0
+mujoco==3.5.0
 robosuite==1.4.0
 bddl==3.6.0
 easydict==1.13
@@ -94,7 +73,7 @@ numpy>=1.26,<2.0
 scipy==1.17.0
 scikit-learn==1.8.0
 scikit-image==0.26.0
-opencv-python==4.13.0.92
+opencv-python-headless==4.13.0.92
 Pillow==12.1.0
 imageio==2.37.2
 
