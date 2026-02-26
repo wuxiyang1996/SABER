@@ -274,9 +274,13 @@ async def train(args: argparse.Namespace) -> None:
     # --- Create timestamped run directory --------------------------------
     from datetime import datetime
     _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _vla_tag = args.vla_config_name.replace("/", "_")
     _agent_tag = args.model_name.replace("/", "_")
-    _run_name = f"{_timestamp}_{_vla_tag}__{_agent_tag}"
+    _vla_tag = args.vla_config_name.replace("/", "_")
+    _obj_tag = args.objective
+    _all_tools = {"token", "char", "prompt"}
+    _active_tools = {t.strip() for t in args.tool_sets.split(",")}
+    _tools_tag = "all" if _active_tools >= _all_tools else "-".join(sorted(_active_tools))
+    _run_name = f"{_agent_tag}__{_vla_tag}__{_timestamp}__{_obj_tag}__{_tools_tag}"
     _run_dir = os.path.join(_ART_OUTPUT_ROOT, "runs", _run_name)
     os.makedirs(_run_dir, exist_ok=True)
     logger.info("Run directory: %s", _run_dir)

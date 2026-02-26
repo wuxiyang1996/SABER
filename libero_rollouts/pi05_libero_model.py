@@ -182,22 +182,21 @@ class Pi05LiberoModel:
             ckpt_dir = str(_download.maybe_download(self.BASE_CHECKPOINT_URL))
 
         # --- Determine asset_id (normalization stats) -----------------------
+        # The asset_id is the relative path from <ckpt>/assets/ to the
+        # directory containing norm_stats.json.  For pi05_libero this is
+        # "physical-intelligence/libero" (two levels deep).
         assets_dir = os.path.join(ckpt_dir, "assets")
         resolved_asset_id = None
         if asset_id is not None:
             resolved_asset_id = asset_id
         elif os.path.isdir(assets_dir):
-            available = [d for d in os.listdir(assets_dir)
-                         if os.path.isdir(os.path.join(assets_dir, d))]
-            # Prefer 'libero' if available, else 'trossen' (compatible with base model).
-            if "libero" in available:
-                resolved_asset_id = "libero"
-            elif "trossen" in available:
-                resolved_asset_id = "trossen"
-            elif available:
-                resolved_asset_id = available[0]
-            else:
-                print(f"[Pi05LiberoModel] WARNING: No assets in {assets_dir}, "
+            # Walk the assets tree to find norm_stats.json
+            for root, _dirs, files in os.walk(assets_dir):
+                if "norm_stats.json" in files:
+                    resolved_asset_id = os.path.relpath(root, assets_dir)
+                    break
+            if resolved_asset_id is None:
+                print(f"[Pi05LiberoModel] WARNING: No norm_stats.json found under {assets_dir}, "
                       "norm stats will be loaded from the config.")
 
         # --- Load policy ----------------------------------------------------
@@ -246,12 +245,15 @@ class Pi05LiberoModel:
     ) -> np.ndarray:
         """Run model inference and return an array of predicted actions.
 
+        Images must already be preprocessed (180-degree rotation + resize to
+        224x224 uint8) via ``preprocess_image`` before calling this method.
+
         Parameters
         ----------
-        agentview_image : np.ndarray, (H, W, 3), uint8
-            Third-person (agent-view) camera image.
-        wrist_image : np.ndarray, (H, W, 3), uint8
-            Wrist (eye-in-hand) camera image.
+        agentview_image : np.ndarray, (224, 224, 3), uint8
+            Preprocessed third-person (agent-view) camera image.
+        wrist_image : np.ndarray, (224, 224, 3), uint8
+            Preprocessed wrist (eye-in-hand) camera image.
         state : np.ndarray, (8,), float32
             Proprioceptive state: [eef_pos(3), axis_angle(3), gripper_qpos(2)].
 
@@ -262,10 +264,9 @@ class Pi05LiberoModel:
         """
         assert self.instruction is not None, "Call set_language() before predict()."
 
-        # Build observation dict matching LIBERO policy input format.
         obs_dict = {
-            "observation/image": preprocess_image(agentview_image),
-            "observation/wrist_image": preprocess_image(wrist_image),
+            "observation/image": agentview_image,
+            "observation/wrist_image": wrist_image,
             "observation/state": state.astype(np.float32),
             "prompt": self.instruction,
         }
@@ -277,10 +278,11 @@ class Pi05LiberoModel:
     def predict_from_obs(self, obs: dict) -> np.ndarray:
         """Convenience: predict directly from a LIBERO observation dict.
 
-        Extracts images and state from the raw LIBERO ``obs`` dict.
+        Handles image preprocessing (180-degree rotation + resize) and
+        proprioceptive state extraction internally.
         """
-        agentview = obs["agentview_image"]
-        wrist = obs["robot0_eye_in_hand_image"]
+        agentview = preprocess_image(obs["agentview_image"])
+        wrist = preprocess_image(obs["robot0_eye_in_hand_image"])
         state = build_libero_state(obs)
         return self.predict(agentview, wrist, state)
 

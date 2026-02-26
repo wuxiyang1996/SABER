@@ -216,9 +216,16 @@ async def evaluate(args: argparse.Namespace) -> None:
     print(metrics_to_latex_row(metrics, label=latex_label))
 
     # --- Save detailed JSON report ---
-    report_dir = os.path.join(
-        _ART_OUTPUT_ROOT, "eval_reports",
-    )
+    from datetime import datetime
+    _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _agent_tag = args.model_name.replace("/", "_")
+    _vla_tag = args.vla_config_name.replace("/", "_")
+    _obj_tag = objective.value
+    _all_tools = {"token", "char", "prompt"}
+    _active_tools = {ts.value for ts in tool_sets}
+    _tools_tag = "all" if _active_tools >= _all_tools else "-".join(sorted(_active_tools))
+    _eval_dir_name = f"{_agent_tag}__{_vla_tag}__{_timestamp}__{_obj_tag}__{_tools_tag}"
+    report_dir = os.path.join(_ART_OUTPUT_ROOT, "eval_reports", _eval_dir_name)
     os.makedirs(report_dir, exist_ok=True)
     report_path = os.path.join(
         report_dir,
