@@ -14,8 +14,10 @@ def main() -> int:
     project_root = os.path.realpath(
         os.path.join(os.path.dirname(__file__), "..")
     )
-    robotwin_root = os.path.realpath(
-        os.path.join(project_root, "..", "RoboTwin")
+    inrepo_openpi_src = os.path.join(project_root, "openpi", "src")
+    robotwin_root = os.environ.get(
+        "ROBOTWIN_ROOT",
+        os.path.realpath(os.path.join(project_root, "..", "RoboTwin")),
     )
     pi05_policy = os.path.join(robotwin_root, "policy", "pi05")
     pi05_src = os.path.join(pi05_policy, "src")
@@ -30,19 +32,36 @@ def main() -> int:
     else:
         print(f"[OK] Python {ver.major}.{ver.minor}")
 
-    # Pi0.5 / RoboTwin layout
-    if not os.path.isdir(robotwin_root):
-        errors.append(f"RoboTwin root not found: {robotwin_root}")
+    # Pi0.5 / openpi: in-repo (agent_attack_framework/openpi/src) or RoboTwin
+    use_inrepo = (
+        os.environ.get("ROBOTWIN_ROOT") is None
+        and os.path.isdir(inrepo_openpi_src)
+        and os.path.isdir(os.path.join(inrepo_openpi_src, "openpi"))
+    )
+    if use_inrepo:
+        print(f"[OK] openpi (in-repo): {inrepo_openpi_src}")
+        if inrepo_openpi_src not in sys.path:
+            sys.path.insert(0, inrepo_openpi_src)
+        inrepo_openpi_client_src = os.path.join(project_root, "openpi", "packages", "openpi-client", "src")
+        if os.path.isdir(inrepo_openpi_client_src) and inrepo_openpi_client_src not in sys.path:
+            sys.path.insert(0, inrepo_openpi_client_src)
     else:
-        print(f"[OK] RoboTwin root: {robotwin_root}")
-    if not os.path.isdir(pi05_policy):
-        errors.append(f"Pi0.5 policy dir not found: {pi05_policy}")
-    else:
-        print(f"[OK] Pi0.5 policy dir: {pi05_policy}")
-    if not os.path.isdir(pi05_src):
-        errors.append(f"Pi0.5 src dir not found: {pi05_src}")
-    else:
-        print(f"[OK] Pi0.5 src dir: {pi05_src}")
+        if not os.path.isdir(robotwin_root):
+            errors.append(f"RoboTwin root not found: {robotwin_root} (or use in-repo openpi at agent_attack_framework/openpi/src)")
+        else:
+            print(f"[OK] RoboTwin root: {robotwin_root}")
+        if not os.path.isdir(pi05_policy):
+            errors.append(f"Pi0.5 policy dir not found: {pi05_policy}")
+        else:
+            print(f"[OK] Pi0.5 policy dir: {pi05_policy}")
+        if not os.path.isdir(pi05_src):
+            errors.append(f"Pi0.5 src dir not found: {pi05_src}")
+        else:
+            print(f"[OK] Pi0.5 src dir: {pi05_src}")
+            if pi05_src not in sys.path:
+                sys.path.insert(0, pi05_src)
+        if pi05_policy not in sys.path:
+            sys.path.insert(0, pi05_policy)
 
     # JAX / OpenPI (for Pi0.5)
     try:

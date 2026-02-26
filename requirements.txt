@@ -1,24 +1,10 @@
 # ============================================================================
-# Agent Attack Framework — Dependencies (pinned to libero conda env)
+# Agent Attack Framework — Python dependencies
 # ============================================================================
+# Tested with: Python 3.11, PyTorch 2.9.0+cu128, JAX 0.5.3, CUDA 12.8
 #
-# Versions below match the `libero` conda environment (Python 3.11, CUDA 12).
-#
-# RECOMMENDED: use the existing libero env and install ART + local deps:
-#
-#   conda activate libero
-#   pip install -e /path/to/ART
-#   pip install -r requirements.txt   # optional, to align any missing pins
-#
-# From scratch (order matters — JAX/PyTorch):
-#
-#   1. conda create -n libero python=3.11 -y && conda activate libero
-#   2. conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
-#   3. pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu128
-#   4. pip install "jax[cuda12]==0.5.3" "numpy>=1.26,<2.0"
-#   5. pip install -r requirements.txt
-#   6. pip install -e /path/to/LIBERO -e /path/to/openpi openpi-client --no-deps
-#
+# One-step install:  bash install.sh [ENV_NAME]   (default env: vast)
+# Manual install:    see INSTALL.md
 # ============================================================================
 
 # ---------------------------------------------------------------------------
@@ -39,12 +25,12 @@ langchain-core==1.2.12
 # ---------------------------------------------------------------------------
 # 3. LLM clients & observability
 # ---------------------------------------------------------------------------
-openai==2.21.0
-litellm==1.81.11
+openai>=2.21.0
+litellm>=1.81.11
 weave==0.52.28
 
 # ---------------------------------------------------------------------------
-# 4. JAX ecosystem (Pi0.5 VLA via OpenPI; install jax[cuda12] before this)
+# 4. JAX ecosystem (Pi0.5 VLA via OpenPI)
 # ---------------------------------------------------------------------------
 jaxlib==0.5.3
 flax==0.10.2
@@ -65,17 +51,22 @@ h5py==3.15.1
 PyOpenGL==3.1.10
 PyOpenGL-accelerate==3.1.10
 termcolor==3.3.0
+matplotlib
+gym>=0.26.0
 
 # ---------------------------------------------------------------------------
 # 6. ML / scientific computing
 # ---------------------------------------------------------------------------
-numpy>=1.26,<2.0
+numpy>=2
 scipy==1.17.0
 scikit-learn==1.8.0
 scikit-image==0.26.0
-opencv-python-headless==4.13.0.92
+opencv-python-headless
 Pillow==12.1.0
 imageio==2.37.2
+
+# torchcodec: unsloth imports it at init time; 0.5 crashes on PyTorch 2.9+
+torchcodec>=0.6.0
 
 # ---------------------------------------------------------------------------
 # 7. Tokenizers / model utilities
@@ -94,6 +85,7 @@ flatbuffers==25.12.19
 # ---------------------------------------------------------------------------
 # 8. General utilities
 # ---------------------------------------------------------------------------
+gcsfs
 pydantic==2.12.5
 python-dotenv==1.2.1
 httpx==0.28.1

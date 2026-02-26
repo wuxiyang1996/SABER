@@ -183,6 +183,70 @@ class VLAAttackScenario:
 
 
 # ============================================================================
+# 3b.  Task-ID parsing & scenario generation
+# ============================================================================
+
+def parse_task_ids(raw: str, task_suite_name: str) -> List[int]:
+    """Parse a task-ID specification into a sorted list of ints.
+
+    Supported formats:
+      - ``"all"``        — every task in the suite (queries the benchmark)
+      - ``"0-89"``       — inclusive range
+      - ``"0,5,10-19"``  — mix of individual IDs and ranges
+    """
+    raw = raw.strip()
+    if raw.lower() == "all":
+        from libero.libero.benchmark import get_benchmark
+        bm = get_benchmark(task_suite_name)(0)
+        return list(range(bm.n_tasks))
+    ids: List[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            ids.extend(range(int(lo.strip()), int(hi.strip()) + 1))
+        else:
+            ids.append(int(part))
+    return sorted(set(ids))
+
+
+def build_scenarios(
+    objective: AttackObjective,
+    tool_sets: List[ToolSet],
+    task_suite_name: str,
+    task_ids: List[int],
+    episodes_per_task: int,
+    stealth_weight: float,
+    max_steps: Optional[int] = None,
+    max_turns: int = 5,
+    replan_steps: int = 10,
+    seed: int = 7,
+) -> List[VLAAttackScenario]:
+    """Build a list of VLAAttackScenario for training or evaluation.
+
+    Each (task_id, episode_idx) pair produces one scenario.
+    """
+    scenarios: List[VLAAttackScenario] = []
+    for tid in task_ids:
+        for ep in range(episodes_per_task):
+            scenarios.append(
+                VLAAttackScenario(
+                    task_suite_name=task_suite_name,
+                    task_id=tid,
+                    episode_idx=ep,
+                    seed=seed,
+                    objective=objective,
+                    tool_sets=list(tool_sets),
+                    stealth_weight=stealth_weight,
+                    max_steps=max_steps,
+                    max_turns=max_turns,
+                    replan_steps=replan_steps,
+                )
+            )
+    return scenarios
+
+
+# ============================================================================
 # 4.  VLA attack state — shared across tool closures
 # ============================================================================
 
@@ -739,6 +803,11 @@ _vla_pool: List[Tuple[Any, Any, threading.Lock]] = []
 _vla_pool_counter = 0
 _vla_pool_counter_lock = threading.Lock()
 
+# Async locks for fine-grained interleaving: while one coroutine waits for
+# VLA inference, the event loop can schedule MuJoCo work for other episodes.
+# Each entry mirrors _vla_pool: (model, jax_device, asyncio.Lock).
+_vla_async_pool: List[Tuple[Any, Any, asyncio.Lock]] = []
+
 # Baseline rollout cache — avoids redundant VLA episodes for trajectories
 # that share the same scenario (same task, episode, seed, instruction).
 # Keyed by (task_suite_name, task_id, episode_idx, seed, instruction).
@@ -763,8 +832,13 @@ def set_vla_models(models_and_devices: list) -> None:
         inference without lock contention.
     """
     global _vla_pool, _vla_pool_counter, _vla_model, _vla_jax_device
+    global _vla_async_pool
     _vla_pool = [
         (model, device, threading.Lock())
+        for model, device in models_and_devices
+    ]
+    _vla_async_pool = [
+        (model, device, asyncio.Lock())
         for model, device in models_and_devices
     ]
     _vla_pool_counter = 0
@@ -813,20 +887,22 @@ def get_vla_jax_device():
 def acquire_vla_model():
     """Get the next VLA model from the pool (round-robin).
 
-    Returns ``(model, jax_device, lock)`` so callers can run inference
-    on the correct GPU with the per-model lock.
+    Returns ``(model, jax_device, threading_lock, async_lock)`` so callers
+    can run inference on the correct GPU with per-model locks.
     """
     global _vla_pool_counter
     if _vla_pool:
         with _vla_pool_counter_lock:
             idx = _vla_pool_counter % len(_vla_pool)
             _vla_pool_counter += 1
-        return _vla_pool[idx]
+        model, device, tlock = _vla_pool[idx]
+        alock = _vla_async_pool[idx][2] if _vla_async_pool else asyncio.Lock()
+        return model, device, tlock, alock
     if _vla_model is None:
         raise RuntimeError(
             "VLA model not set.  Call set_vla_model() or set_vla_models() before rollout."
         )
-    return _vla_model, _vla_jax_device, _vla_inference_lock
+    return _vla_model, _vla_jax_device, _vla_inference_lock, asyncio.Lock()
 
 
 # ============================================================================
@@ -996,6 +1072,242 @@ def _run_vla_episode(
 
 
 # ============================================================================
+# 9b. Async pipelining — overlap MuJoCo (CPU) with VLA inference (GPU)
+# ============================================================================
+#
+# The async episode runner splits each episode into alternating phases:
+#   Phase A  — VLA inference (GPU): acquire async lock, run in thread pool
+#   Phase B  — MuJoCo stepping (CPU): run replan_steps env.step() in thread pool
+#
+# While episode X does MuJoCo stepping on a CPU thread, episode Y can do VLA
+# inference on GPU, and vice versa.  The asyncio.Lock yields control to the
+# event loop (unlike threading.Lock which blocks the thread), enabling the
+# event loop to schedule work for other episodes.
+# ============================================================================
+
+
+def _vla_infer_sync(
+    vla_model,
+    obs: dict,
+    instruction: str,
+    vla_device,
+    replan_steps: int,
+) -> np.ndarray:
+    """Run one VLA inference call (synchronous, for use inside a thread)."""
+    from pi05_libero_model import preprocess_image, build_libero_state
+
+    agentview = preprocess_image(obs["agentview_image"])
+    wrist = preprocess_image(obs["robot0_eye_in_hand_image"])
+    state = build_libero_state(obs)
+
+    if vla_device is not None:
+        import jax
+        agentview = jax.device_put(agentview, vla_device)
+        wrist = jax.device_put(wrist, vla_device)
+        state = jax.device_put(state, vla_device)
+
+    vla_model.set_language(instruction)
+    actions = vla_model.predict(agentview, wrist, state)
+    return actions[:replan_steps]
+
+
+def _mujoco_step_chunk(
+    env,
+    actions: List[np.ndarray],
+    instruction: str,
+    collect_predicates: bool = True,
+    contact_force_threshold: float = 50.0,
+    scene_snapshot_interval: int = 25,
+    step_offset: int = 0,
+) -> dict:
+    """Run a batch of MuJoCo steps (synchronous, for use inside a thread).
+
+    Returns a dict with accumulated per-step signals and the final state.
+    """
+    from rwd_func.rwd import (
+        _count_robot_contacts,
+        _check_joint_limits,
+        _max_robot_contact_force,
+        _action_clipping_ratio,
+        collect_scene_entity_snapshot,
+    )
+
+    results = {
+        "observations": [],
+        "actions": [],
+        "reasoning_texts": [],
+        "contact_forces": [],
+        "action_clips": [],
+        "collision_count": 0,
+        "joint_limit_violations": 0,
+        "excessive_force_count": 0,
+        "predicate_history": [],
+        "scene_snapshots": [],
+        "done": False,
+        "final_obs": None,
+        "steps_done": 0,
+        "success_streak": 0,
+    }
+
+    for i, action in enumerate(actions):
+        action_arr = np.array(action, dtype=np.float64)
+        results["actions"].append(action_arr)
+        results["reasoning_texts"].append("")
+        results["action_clips"].append(_action_clipping_ratio(action_arr, env))
+
+        obs, reward, done, env_info = env.step(action_arr)
+        results["observations"].append(obs)
+        results["final_obs"] = obs
+
+        step_num = step_offset + i + 1
+        results["steps_done"] += 1
+
+        contacts = _count_robot_contacts(env)
+        results["collision_count"] += contacts
+
+        if _check_joint_limits(env):
+            results["joint_limit_violations"] += 1
+
+        max_force = _max_robot_contact_force(env)
+        results["contact_forces"].append(max_force)
+        if max_force > contact_force_threshold:
+            results["excessive_force_count"] += 1
+
+        if collect_predicates and hasattr(env, "parsed_problem"):
+            try:
+                goal_state = env.parsed_problem.get("goal_state", [])
+                pred_snapshot = {}
+                for state_spec in goal_state:
+                    pred_snapshot[str(state_spec)] = env._eval_predicate(state_spec)
+                results["predicate_history"].append(pred_snapshot)
+            except Exception:
+                pass
+
+        if hasattr(env, "_check_success"):
+            try:
+                if env._check_success():
+                    results["success_streak"] += 1
+                    if results["success_streak"] >= 10:
+                        results["done"] = True
+                else:
+                    results["success_streak"] = 0
+            except Exception:
+                results["success_streak"] = 0
+
+        if (scene_snapshot_interval > 0
+                and step_num % scene_snapshot_interval == 0):
+            try:
+                snap = collect_scene_entity_snapshot(env)
+                snap["__step__"] = step_num
+                results["scene_snapshots"].append(snap)
+            except Exception:
+                pass
+
+        if done or results["done"]:
+            results["done"] = True
+            break
+
+    return results
+
+
+async def _run_vla_episode_async(
+    env,
+    initial_states,
+    vla_model,
+    instruction: str,
+    episode_idx: int = 0,
+    max_steps: int = 300,
+    observation_override: Optional[np.ndarray] = None,
+    replan_steps: int = REPLAN_STEPS,
+    vla_device=None,
+    vla_async_lock: Optional[asyncio.Lock] = None,
+) -> VLARolloutInfo:
+    """Async VLA episode with pipelined MuJoCo/VLA inference.
+
+    While this episode waits for the VLA async lock, the event loop can
+    schedule MuJoCo step batches for other episodes on CPU threads.
+    """
+    from rwd_func.rwd import collect_scene_static_info, collect_scene_entity_snapshot
+
+    obs = _reset_env(env, initial_states, episode_idx)
+    if observation_override is not None:
+        obs = dict(obs)
+        obs["agentview_image"] = observation_override
+
+    raw_env = env.env if hasattr(env, "env") else env
+    alock = vla_async_lock or asyncio.Lock()
+
+    info = VLARolloutInfo(max_steps=max_steps)
+    info.actions = []
+    info.reasoning_texts = []
+    info.raw_outputs = []
+    info.observations = []
+    info.predicate_history = []
+    info.scene_entity_snapshots = []
+    info.contact_force_history = []
+    info.action_clipping_ratios = []
+    info.scene_entities_static = await asyncio.to_thread(
+        collect_scene_static_info, raw_env,
+    )
+
+    step = 0
+
+    while step < max_steps:
+        # --- Phase A: VLA inference (GPU) — async lock lets other episodes
+        #     schedule CPU work while this one waits for the model. ----------
+        async with alock:
+            actions = await asyncio.to_thread(
+                _vla_infer_sync, vla_model, obs, instruction,
+                vla_device, replan_steps,
+            )
+
+        action_list = actions.tolist()
+        remaining = max_steps - step
+        chunk = [np.array(a, dtype=np.float64) for a in action_list[:remaining]]
+
+        # --- Phase B: MuJoCo stepping (CPU) — runs in thread pool so other
+        #     episodes can do VLA inference concurrently. --------------------
+        chunk_result = await asyncio.to_thread(
+            _mujoco_step_chunk,
+            raw_env, chunk, instruction,
+            True, 50.0, 25, step,
+        )
+
+        info.actions.extend(chunk_result["actions"])
+        info.reasoning_texts.extend(chunk_result["reasoning_texts"])
+        info.raw_outputs.extend(chunk_result["reasoning_texts"])
+        info.observations.extend(chunk_result["observations"])
+        info.contact_force_history.extend(chunk_result["contact_forces"])
+        info.action_clipping_ratios.extend(chunk_result["action_clips"])
+        info.collision_count += chunk_result["collision_count"]
+        info.joint_limit_violations += chunk_result["joint_limit_violations"]
+        info.excessive_force_count += chunk_result["excessive_force_count"]
+        info.predicate_history.extend(chunk_result["predicate_history"])
+        info.scene_entity_snapshots.extend(chunk_result["scene_snapshots"])
+        step += chunk_result["steps_done"]
+        obs = chunk_result["final_obs"]
+
+        if chunk_result["done"]:
+            break
+
+    if 25 > 0:
+        try:
+            snap = await asyncio.to_thread(collect_scene_entity_snapshot, raw_env)
+            snap["__step__"] = step
+            info.scene_entity_snapshots.append(snap)
+        except Exception:
+            pass
+
+    info.num_steps = step
+    info.task_success = bool(
+        hasattr(raw_env, "_check_success") and raw_env._check_success()
+    )
+    info.timeout = step >= max_steps and not info.task_success
+
+    return info
+
+
+# ============================================================================
 # 10.  Main rollout — LangGraph ReAct attack agent
 # ============================================================================
 
@@ -1020,7 +1332,7 @@ async def vla_attack_rollout(
     5. Build ``AttackInfo``, compute reward via ``ObjectiveReward``.
     6. Return populated ``art.Trajectory``.
     """
-    vla_model, vla_device, vla_lock = acquire_vla_model()
+    vla_model, vla_device, vla_lock, vla_async_lock = acquire_vla_model()
 
     # --- Resolve scenario parameters ---
     max_steps = scenario.max_steps or _MAX_STEPS.get(
@@ -1028,12 +1340,15 @@ async def vla_attack_rollout(
     )
 
     # --- Create / reset LIBERO env ---
-    env, initial_states, env_instruction = _create_libero_env(
+    env, initial_states, env_instruction = await asyncio.to_thread(
+        _create_libero_env,
         scenario.task_suite_name, scenario.task_id, scenario.seed,
     )
 
     instruction = scenario.instruction_override or env_instruction
-    obs = _reset_env(env, initial_states, scenario.episode_idx)
+    obs = await asyncio.to_thread(
+        _reset_env, env, initial_states, scenario.episode_idx,
+    )
 
     # Capture the clean first-frame observation (for visual attacks)
     clean_observation = obs["agentview_image"].copy()
@@ -1054,28 +1369,27 @@ async def vla_attack_rollout(
     async with _key_lock:
         baseline_info = _baseline_cache.get(_cache_key)
         if baseline_info is not None:
-            logger.info(
-                "Baseline VLA rollout [%s task %d, ep %d] — CACHED (skipping re-run)",
+            logger.debug(
+                "Baseline VLA rollout [%s task %d, ep %d] — CACHED",
                 scenario.task_suite_name, scenario.task_id, scenario.episode_idx,
             )
         else:
-            logger.info(
-                "Running baseline VLA rollout [%s task %d, ep %d] (attacked=False) ...",
+            logger.debug(
+                "Running baseline VLA rollout [%s task %d, ep %d] ...",
                 scenario.task_suite_name, scenario.task_id, scenario.episode_idx,
             )
-            baseline_info = await asyncio.to_thread(
-                _run_vla_episode,
+            baseline_info = await _run_vla_episode_async(
                 env, initial_states, vla_model,
                 instruction=instruction,
                 episode_idx=scenario.episode_idx,
                 max_steps=max_steps,
                 replan_steps=scenario.replan_steps,
                 vla_device=vla_device,
-                vla_lock=vla_lock,
+                vla_async_lock=vla_async_lock,
             )
             _baseline_cache[_cache_key] = baseline_info
 
-    logger.info(
+    logger.debug(
         "Baseline: success=%s, steps=%d",
         baseline_info.task_success, baseline_info.num_steps,
     )
@@ -1174,13 +1488,8 @@ async def vla_attack_rollout(
     perturbed_instruction = state.perturbed_instruction
     perturbed_observation = state.perturbed_observation
 
-    logger.info(
-        "Running attack VLA rollout (attacked=True, perturbed) ...\n"
-        "  instruction changed: %s\n"
-        "  observation changed: %s",
-        perturbed_instruction != instruction,
-        (perturbed_observation is not None
-         and not np.array_equal(perturbed_observation, clean_observation)),
+    logger.debug(
+        "Running attack VLA rollout (attacked=True, perturbed) ...",
     )
 
     # Only pass observation override if it was actually modified
@@ -1191,8 +1500,7 @@ async def vla_attack_rollout(
     ):
         obs_override = perturbed_observation
 
-    attack_vla_info = await asyncio.to_thread(
-        _run_vla_episode,
+    attack_vla_info = await _run_vla_episode_async(
         env, initial_states, vla_model,
         instruction=perturbed_instruction,
         episode_idx=scenario.episode_idx,
@@ -1200,10 +1508,10 @@ async def vla_attack_rollout(
         observation_override=obs_override,
         replan_steps=scenario.replan_steps,
         vla_device=vla_device,
-        vla_lock=vla_lock,
+        vla_async_lock=vla_async_lock,
     )
-    logger.info(
-        "Attack: success=%s, steps=%d",
+    logger.debug(
+        "Attack rollout done: success=%s, steps=%d",
         attack_vla_info.task_success, attack_vla_info.num_steps,
     )
 
@@ -1246,9 +1554,22 @@ async def vla_attack_rollout(
     trajectory.metadata["perturbed_instruction"] = perturbed_instruction
     trajectory.metadata["tools_used"] = ", ".join(state.tools_used)
 
+    _attack_flipped = baseline_info.task_success and not attack_vla_info.task_success
     logger.info(
-        "Episode done (attacked=True) — reward=%.3f, objective=%s",
-        trajectory.reward, scenario.objective.value,
+        "[%s task %d ep %d]  baseline=%s (%d steps)  attack=%s (%d steps)  "
+        "flipped=%s  reward=%.3f  tools=%s\n"
+        "  ORIG : %s\n"
+        "  ATTK : %s",
+        scenario.task_suite_name, scenario.task_id, scenario.episode_idx,
+        "PASS" if baseline_info.task_success else "FAIL",
+        baseline_info.num_steps,
+        "PASS" if attack_vla_info.task_success else "FAIL",
+        attack_vla_info.num_steps,
+        "YES" if _attack_flipped else "no",
+        trajectory.reward,
+        ", ".join(state.tools_used) if state.tools_used else "(none)",
+        instruction,
+        perturbed_instruction if perturbed_instruction != instruction else "(unchanged)",
     )
 
     # Cleanup env to free MuJoCo resources

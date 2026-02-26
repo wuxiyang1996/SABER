@@ -44,3 +44,4 @@ wandb/
 runs/
 # ART checkpoints, vLLM logs, trajectories (do not commit)
 outputs/
+openpi/

@@ -51,18 +51,23 @@ So: **max_turns** = “how many tool-call rounds”; **attack budget** = “how 
 
 ## Prerequisites
 
-1. **Environment**: Use the env from `requirements.txt` (e.g. conda `libero`, Python 3.11, PyTorch + JAX, LIBERO, openpi, openpipe-art). To verify:
+**Full setup:** See **INSTALL.md** for step-by-step installation (conda env, pip, RoboTwin, LIBERO).
+
+1. **Environment**: Use the env from `requirements.txt` (e.g. conda `vast` or `libero`, Python 3.11, PyTorch + JAX, LIBERO, openpi, openpipe-art). To verify:
    ```bash
-   conda activate libero
+   conda activate vast   # or libero
    python scripts/check_libero_env.py
    ```
-   This checks: Python 3.11, RoboTwin/policy/pi05, jax, flax, openpi, libero, openpipe-art, vllm, langgraph, and Pi05LiberoModel. If `vllm` is not 0.13.0, you may see a warning; upgrade with `pip install vllm==0.13.0` if needed.
+   This checks: Python 3.11, RoboTwin root and policy/pi05, jax, flax, openpi, libero, openpipe-art, vllm, langgraph, and Pi05LiberoModel. If `vllm` is not 0.13.0, you may see a warning; upgrade with `pip install vllm==0.13.0` if needed.
 2. **LIBERO**: Installed and on `PYTHONPATH` (e.g. `pip install -e /path/to/LIBERO --no-deps`).
-3. **RoboTwin + pi0.5**: The pi0.5 wrapper expects RoboTwin at `vlm-robot/RoboTwin` (sibling of `agent_attack_framework/`), with `policy/pi05` and the openpi code it ships. If your layout is different, adjust `libero_rollouts/pi05_libero_model.py` (`_ROBOTWIN_ROOT`).
+3. **RoboTwin + openpi**: The Pi0.5 wrapper needs the **openpi** library from RoboTwin’s `policy/pi05`. Either place RoboTwin at `<workspace>/RoboTwin` (sibling of `agent_attack_framework/`), or set **`ROBOTWIN_ROOT`** to the RoboTwin root: `export ROBOTWIN_ROOT=/path/to/RoboTwin`. If missing, you get `ModuleNotFoundError: No module named 'openpi'` — see INSTALL.md.
 4. **Headless rendering**: On a machine without a display, set before any MuJoCo/PyOpenGL import (the script sets these by default):
    - `MUJOCO_GL=egl`
    - `PYOPENGL_PLATFORM=egl`
-5. **GPUs**: GPU 0 is dedicated to all VLA rollouts (Pi0.5 via JAX); all remaining visible GPUs are used for the attack agent (vLLM/ART training). The script auto-detects visible GPUs and excludes `--vla_gpu` from the attack set. For single-GPU runs use `--vla_gpu 0 --attack_gpus 0` (may OOM).
+5. **GPUs / multi-GPU**:
+   - **VLA (Pi0.5)**: `--vla_gpus` accepts comma-separated indices (e.g. `0,1,2`). One Pi0.5 model is loaded per GPU; rollouts use a round-robin pool so inference can run in parallel across VLA GPUs.
+   - **Attack agent (vLLM)**: `--attack_gpus` lists the GPU(s) for the vLLM subprocess. The script sets `CUDA_VISIBLE_DEVICES` to these so the ART/vLLM process sees them. vLLM currently runs with **tensor_parallel_size=1** (one GPU) so only the first GPU in the list is used for the attack model; multiple indices still reserve which GPUs the subprocess can see.
+   - **Default**: `--vla_gpus 0` and `--attack_gpus` = all other visible GPUs (e.g. `1,2,3` on a 4-GPU node). For single-GPU runs use `--vla_gpus 0 --attack_gpus 0` (may OOM; use `--gpu_memory_utilization 0.45`).
 
 **Version note**: `requirements.txt` pins `vllm==0.13.0`. If your env has a different vllm (e.g. 0.11.2), the check script will warn; upgrade with `pip install vllm==0.13.0` if you need exact compatibility.
 
@@ -78,7 +83,7 @@ The run can appear to hang at a few points. Here’s what usually happens and wh
 
 - **What you see**: No log for a while after `python run.py vla ...`.
 - **Cause**: Heavy imports (PyTorch, JAX, ART, LIBERO, etc.).
-- **What to do**: Wait 30–60 s. If it still does nothing, run with `python -u run.py vla ...` so stdout is unbuffered and check for import errors (e.g. missing LIBERO, RoboTwin, or openpi).
+- **What to do**: Wait 30–60 s. If it still does nothing, run with `python -u run.py vla ...` so stdout is unbuffered and check for import errors (e.g. missing LIBERO, RoboTwin/openpi). If you see `ModuleNotFoundError: No module named 'openpi'`, set `ROBOTWIN_ROOT` or clone RoboTwin; see INSTALL.md.
 
 ### 2. “Loading Pi0.5 VLA model on GPU 0 …”
 
@@ -120,6 +125,17 @@ The run can appear to hang at a few points. Here’s what usually happens and wh
   3. Ensure the attack GPUs don't overlap with the VLA GPU (default: GPU 0 = VLA rollouts, remaining = agent training).
   4. Try a smaller `--base_model` (e.g. Qwen3-1.7B) if the GPU is small.
 
+### 7b. “Child process 'model-service' was killed by signal 6” (SIGABRT)
+
+- **What you see**: `RuntimeError: Child process 'model-service' was killed by signal 6` during `attack_model.register(backend)`.
+- **Cause**: The ART/vLLM inference server subprocess aborted. Common causes: **GPU OOM** while loading the attack model, vLLM or CUDA init failure, or resource limits. Signal 6 (SIGABRT) often indicates an abort in C++/CUDA code (e.g. OOM, failed assertion).
+- **What to do**:
+  1. **Lower vLLM GPU memory**: `--gpu_memory_utilization 0.5` or `0.45`. On a single GPU shared with the VLA, try `0.4`.
+  2. **Use a dedicated GPU for the attack agent** if possible: e.g. `--vla_gpus 0 --attack_gpus 1` so vLLM runs on GPU 1 and Pi0.5 on GPU 0. Avoid `--vla_gpus 0 --attack_gpus 0` unless you have enough VRAM.
+  3. **Check ART/vLLM logs**: `outputs/vla-attack-agent/models/<model_name>/logs/` — the subprocess may have printed the real error (OOM, CUDA error) before exiting.
+  4. **Reduce memory pressure**: Close other GPU processes; ensure `XLA_PYTHON_CLIENT_MEM_FRACTION` for JAX (Pi0.5) is low (e.g. 0.25) so the VLA leaves room for vLLM when sharing a GPU.
+  5. **Smaller base model**: Try `--base_model Qwen/Qwen2.5-1.5B-Instruct` to reduce vLLM memory.
+
 ### 8. “add_lora” failed: tensor size mismatch
 
 - **What you see**: `ValueError: Call to add_lora method failed: The size of tensor a (…) must match the size of tensor b (…) at non-singleton dimension …`.
@@ -136,7 +152,7 @@ The run can appear to hang at a few points. Here’s what usually happens and wh
 - **What to do**:
   1. **Check vLLM logs**: ART writes logs under `agent_attack_framework/outputs/vla-attack-agent/models/<model_name>/logs/`. Open the latest log and search for the first `Traceback`, `Error`, or `OutOfMemoryError` **before** the 500.
   2. **Lower GPU memory use**: `--gpu_memory_utilization 0.5` (or 0.45 if using a single GPU for both VLA and attack).
-  3. **Use separate GPUs**: Ensure `--vla_gpu` (default 0, all rollouts) does not overlap with `--attack_gpus` (defaults to all other visible GPUs).
+  3. **Use separate GPUs**: Ensure `--vla_gpus` (default 0) does not overlap with `--attack_gpus` (defaults to all other visible GPUs).
   4. **Apply ART/vLLM patches** (README): If you are on vLLM < 0.16, add the `pause_generation`/`resume_generation` stubs in `vllm/v1/engine/async_llm.py` and use `llm.sleep()`/`llm.wake_up()` in `art/unsloth/service.py` instead of `run_on_workers(do_sleep/do_wake_up)`.
   5. **Smaller model**: Try `--base_model Qwen/Qwen2.5-1.5B-Instruct` (or Qwen3-1.7B) to reduce vLLM memory.
   6. **Retry**: Sometimes the first request after wake-up fails; the next step may succeed. If 500s are intermittent, increase timeouts or reduce concurrency (e.g. fewer `trajectories_per_group`).
@@ -184,7 +200,7 @@ If you only have one GPU:
 python run.py vla \
   --task_suite libero_spatial \
   --task_ids 0 \
-  --vla_gpu 0 \
+  --vla_gpus 0 \
   --attack_gpus 0 \
   --gpu_memory_utilization 0.45 \
   --episodes_per_task 1 \
@@ -205,6 +221,6 @@ Both Pi0.5 (JAX) and the attack model (vLLM) will use GPU 0; 0.45 leaves room fo
 | `--episodes_per_task` | 3 | Initial states per task |
 | `--groups_per_step` | 4 | Scenario groups per training step |
 | `--trajectories_per_group` | 4 | Rollouts per group |
-| `--vla_gpu` | 0 | GPU for Pi0.5 (JAX) |
+| `--vla_gpus` | 0 | GPU(s) for Pi0.5 (JAX); comma-separated for multi-GPU rollouts |
 | `--attack_gpus` | 1 | GPU(s) for attack model (vLLM) |
 | `--max_steps` | (suite default) | Max env steps per episode (use lower for quick tests) |

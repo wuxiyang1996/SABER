@@ -28,17 +28,51 @@ if "XLA_PYTHON_CLIENT_MEM_FRACTION" not in os.environ:
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Resolve paths so the openpi library shipped with RoboTwin/policy/pi05 is
-# importable regardless of where this script is invoked from.
+# Resolve paths so the openpi library is importable. Prefer in-repo openpi
+# (agent_attack_framework/openpi/src), then RoboTwin/policy/pi05.
+# Set ROBOTWIN_ROOT to force the RoboTwin path when both exist.
 # ---------------------------------------------------------------------------
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
-_ROBOTWIN_ROOT = os.path.realpath(os.path.join(_THIS_DIR, "..", "..", "RoboTwin"))
+_FRAMEWORK_ROOT = os.path.realpath(os.path.join(_THIS_DIR, ".."))
+_INREPO_OPENPI_SRC = os.path.join(_FRAMEWORK_ROOT, "openpi", "src")
+
+_ROBOTWIN_ROOT = os.environ.get(
+    "ROBOTWIN_ROOT",
+    os.path.realpath(os.path.join(_THIS_DIR, "..", "..", "RoboTwin")),
+)
 _PI05_POLICY_DIR = os.path.join(_ROBOTWIN_ROOT, "policy", "pi05")
 _PI05_SRC_DIR = os.path.join(_PI05_POLICY_DIR, "src")
 
-for p in (_PI05_POLICY_DIR, _PI05_SRC_DIR):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# Prefer in-repo openpi (agent_attack_framework/openpi/src) unless ROBOTWIN_ROOT is set
+_use_inrepo = (
+    os.environ.get("ROBOTWIN_ROOT") is None
+    and os.path.isdir(_INREPO_OPENPI_SRC)
+    and os.path.isdir(os.path.join(_INREPO_OPENPI_SRC, "openpi"))
+)
+
+if _use_inrepo:
+    if _INREPO_OPENPI_SRC not in sys.path:
+        sys.path.insert(0, _INREPO_OPENPI_SRC)
+    # openpi imports openpi_client; use in-repo package when present
+    _INREPO_OPENPI_CLIENT_SRC = os.path.join(_FRAMEWORK_ROOT, "openpi", "packages", "openpi-client", "src")
+    if os.path.isdir(_INREPO_OPENPI_CLIENT_SRC) and _INREPO_OPENPI_CLIENT_SRC not in sys.path:
+        sys.path.insert(0, _INREPO_OPENPI_CLIENT_SRC)
+else:
+    if not os.path.isdir(_ROBOTWIN_ROOT):
+        raise FileNotFoundError(
+            f"RoboTwin root not found: {_ROBOTWIN_ROOT}\n"
+            "The Pi0.5 VLA wrapper requires openpi: either use the in-repo copy at\n"
+            "  agent_attack_framework/openpi/src  (no ROBOTWIN_ROOT set),\n"
+            "or clone RoboTwin and set ROBOTWIN_ROOT. See INSTALL.md."
+        )
+    if not os.path.isdir(_PI05_POLICY_DIR):
+        raise FileNotFoundError(
+            f"Pi0.5 policy dir not found: {_PI05_POLICY_DIR}\n"
+            "RoboTwin must contain policy/pi05 (openpi library). See INSTALL.md."
+        )
+    for p in (_PI05_POLICY_DIR, _PI05_SRC_DIR):
+        if p not in sys.path:
+            sys.path.insert(0, p)
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +148,7 @@ class Pi05LiberoModel:
         Number of steps from the action chunk to use before re-planning.
     """
 
-    BASE_CHECKPOINT_URL = "gs://openpi-assets/checkpoints/pi05_base"
+    BASE_CHECKPOINT_URL = "gs://openpi-assets/checkpoints/pi05_libero"
 
     def __init__(
         self,
@@ -124,9 +158,17 @@ class Pi05LiberoModel:
         action_horizon: int = 50,
         replan_steps: int = 5,
     ):
-        from openpi.policies import policy_config as _policy_config
-        from openpi.shared import download as _download
-        from openpi.training import config as _config
+        try:
+            from openpi.policies import policy_config as _policy_config
+            from openpi.shared import download as _download
+            from openpi.training import config as _config
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                f"Cannot import openpi: {e}\n"
+                "The openpi library is provided by the RoboTwin repo (policy/pi05).\n"
+                "Ensure ROBOTWIN_ROOT points to the RoboTwin root and that policy/pi05/src "
+                "contains the openpi package. See INSTALL.md in agent_attack_framework."
+            ) from e
 
         self.train_config_name = train_config_name
         self.action_horizon = action_horizon
@@ -136,7 +178,7 @@ class Pi05LiberoModel:
         if checkpoint_path is not None:
             ckpt_dir = str(_download.maybe_download(checkpoint_path))
         else:
-            print(f"[Pi05LiberoModel] Downloading base model from {self.BASE_CHECKPOINT_URL} ...")
+            print(f"[Pi05LiberoModel] Downloading Pi0.5-LIBERO from {self.BASE_CHECKPOINT_URL} ...")
             ckpt_dir = str(_download.maybe_download(self.BASE_CHECKPOINT_URL))
 
         # --- Determine asset_id (normalization stats) -----------------------
@@ -193,8 +235,8 @@ class Pi05LiberoModel:
 
     def set_language(self, instruction: str) -> None:
         """Set the language instruction for the current episode."""
-        self.instruction = instruction
-        print(f"[Pi05LiberoModel] Instruction: {instruction}")
+        if instruction != self.instruction:
+            self.instruction = instruction
 
     def predict(
         self,

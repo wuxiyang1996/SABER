@@ -151,32 +151,73 @@ agent_attack_framework/
 │   ├── __init__.py
 │   └── qa_model.py            # Frozen Qwen2.5-3B QA wrapper
 ├── scripts/
-│   └── check_libero_env.py    # Environment verification script
+│   ├── check_libero_env.py    # Environment verification script
+│   └── apply_vllm_patches.py  # Auto-apply ART ↔ vLLM 0.11.x patches
 ├── run.py                     # Convenience entry-point (HotpotQA + VLA)
 ├── train_vla.py               # GRPO training for VLA attack agent
 ├── eval_attack.py             # Post-training VLA attack evaluation
 ├── eval.py                    # HotpotQA evaluation: baseline vs attack
+├── install.sh                 # One-command full install (conda + deps + patches)
 ├── requirements.txt
+├── INSTALL.md                 # Detailed manual installation guide
 ├── RUN.md                     # VLA run guide and troubleshooting
 └── README.md
 ```
 
 ## Setup
 
+### Quick install (recommended)
+
+A single script creates the conda environment, installs PyTorch + JAX + all Python
+dependencies, sets up LIBERO, and applies the required ART/vLLM patches:
+
 ```bash
-# 1. Install ART from local checkout
-pip install -e /path/to/ART
+# Clone LIBERO first (if not already present alongside this repo)
+git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
 
-# 2. Install dependencies
+# One-command install (creates conda env "vast" with Python 3.11)
+bash install.sh
+```
+
+Options:
+
+```bash
+bash install.sh myenv            # custom env name
+bash install.sh vast --skip-conda  # skip conda create if env already exists
+LIBERO_ROOT=/path/to/LIBERO bash install.sh  # custom LIBERO location
+```
+
+After install, activate and run:
+
+```bash
+conda activate vast
+python train_vla.py  # trains on libero_90 (all 90 tasks), evals on libero_10 after training
+```
+
+### Manual install
+
+If you prefer step-by-step control, see **INSTALL.md** for the full walkthrough
+(conda env, PyTorch/JAX, `pip install -r requirements.txt`, LIBERO, patches).
+
+```bash
+# Summary of manual steps:
+conda create -n vast python=3.11 -y && conda activate vast
+conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
+pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https://download.pytorch.org/whl/cu128
+pip install "numpy>=2" "jax[cuda12]==0.5.3"
 pip install -r requirements.txt
+pip install -e ../LIBERO --no-deps
+python scripts/apply_vllm_patches.py
 
-# 3. (Optional) W&B for logging
+# (Optional) W&B for logging
 export WANDB_API_KEY=your_key
 ```
 
-### Required patches
+### Required patches (ART 0.5.x + vLLM 0.11.x)
 
-**vLLM compat (ART 0.5.x + vLLM < 0.16):** ART's training service calls `pause_generation()` and `resume_generation()` on vLLM's `AsyncLLM` — methods only available in vLLM >= 0.16.0. If your installed vLLM is older (e.g. 0.11.x), add the following stubs to `vllm/v1/engine/async_llm.py` in the `AsyncLLM` class (before the existing `sleep` method):
+The installed ART (openpipe-art 0.5.9) targets vLLM ≥ 0.16 APIs that are missing in vLLM 0.11.x. Apply **both** patches below before running VLA training. Paths are relative to the venv site-packages (e.g. `/venv/vast/lib/python3.11/site-packages/`). A helper script applies both automatically: `python scripts/apply_vllm_patches.py`.
+
+**Patch 1 — `pause_generation` / `resume_generation` stubs:** ART's `UnslothService` calls `llm.pause_generation()` and `llm.resume_generation()`, which only exist in vLLM ≥ 0.16. Add these no-op stubs to `vllm/v1/engine/async_llm.py` in the `AsyncLLM` class (before the existing `sleep` method):
 
 ```python
 # -- ART compat (added for openpipe-art 0.5.x, native in vLLM >=0.16) --
@@ -187,9 +228,19 @@ async def resume_generation(self) -> None:
     pass
 ```
 
-These are no-ops; ART's `do_sleep`/`do_wake_up` worker RPCs handle the actual GPU memory management. Remove them once you upgrade vLLM to >= 0.16.
+These are no-ops; ART's `do_sleep`/`do_wake_up` worker RPCs handle the actual GPU memory management. Remove them once you upgrade vLLM to ≥ 0.16.
 
-**Sleep/wake EngineDeadError (ART 0.5.x + vLLM 0.11.x):** ART's `UnslothService.train()` puts vLLM to sleep via `run_on_workers(llm, do_sleep)`, which sends a pickled function through `collective_rpc("run")`. This bypasses vLLM's EngineCore coordination — the engine core doesn't know memory was unmapped, and the next output read causes `EngineDeadError`. vLLM 0.11 already has built-in `sleep()`/`wake_up()` that route through the proper pipeline (`llm.sleep()` → `engine_core.sleep_async()` → `executor.sleep()` → `Worker.sleep()`). In `art/unsloth/service.py`, replace:
+**Patch 2 — `tool_parsers` import path:** ART imports `from vllm.tool_parsers.abstract_tool_parser import ToolParserManager`, but vLLM 0.11 moved it to `vllm.entrypoints.openai.tool_parsers`. In `art/vllm/patches.py`, change the import:
+
+```python
+# BEFORE (vLLM >= 0.16 path):
+from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
+
+# AFTER (vLLM 0.11.x path):
+from vllm.entrypoints.openai.tool_parsers.abstract_tool_parser import ToolParserManager
+```
+
+**Patch 3 — sleep/wake via native vLLM pipeline:** ART's `UnslothService.train()` puts vLLM to sleep via `run_on_workers(llm, do_sleep)`, which sends a pickled function through `collective_rpc("run")`. This bypasses EngineCore coordination — the engine core doesn't know memory was unmapped, and the next output read causes `EngineDeadError`. vLLM 0.11 already has built-in `sleep()`/`wake_up()` that route correctly (`llm.sleep()` → `engine_core.sleep_async()` → `executor.sleep()` → `Worker.sleep()`). In `art/unsloth/service.py`, replace:
 
 ```python
 # BEFORE (crashes EngineCore on vLLM 0.11):
@@ -259,22 +310,29 @@ The same framework can train an attack agent to perturb **instructions and/or ob
 
 The attack agent uses token/char/prompt/visual tools; reward is based on task failure (and optional stealth).
 
-**Single entry point:**
+**Default run (train on libero_90, eval on libero_10):**
 
 ```bash
 cd agent_attack_framework
-python run.py vla --objective task_failure --task_suite libero_spatial --task_ids 0,1,2
+python train_vla.py
 ```
 
-**Or call the VLA script directly:**
+By default, this trains on all 90 tasks in `libero_90` and automatically evaluates on
+all 10 tasks in `libero_10` after training completes. Use `--skip_eval` to disable
+post-training evaluation.
+
+**Custom task selection:**
 
 ```bash
 python train_vla.py \
-    --objective task_failure \
-    --tool_sets token,char,prompt \
     --task_suite libero_spatial \
-    --task_ids 0,1,2
+    --task_ids 0-4 \
+    --eval_task_suite libero_10 \
+    --eval_task_ids all
 ```
+
+Task IDs support ranges (`0-89`), comma-separated lists (`0,3,5`), mixed (`0,5,10-19`),
+or `all` to use every task in the suite.
 
 **Key options:**
 
@@ -282,10 +340,13 @@ python train_vla.py \
 |------|---------|-------------|
 | `--objective` | task_failure | Attack objective (see **Reward design** above) |
 | `--tool_sets` | token,char,prompt | Comma-separated: token, char, prompt, visual |
-| `--task_suite` | libero_spatial | LIBERO suite: libero_spatial, libero_object, libero_goal, libero_10, libero_90 |
-| `--task_ids` | 0 | Comma-separated task indices |
-| `--vla_gpus` | 0 | Comma-separated GPU indices for Pi0.5 VLA. One model per GPU for parallel rollouts (e.g. `0,1,2`). |
-| `--attack_gpus` | all others | GPU(s) for agent training (vLLM/ART). Default: all visible GPUs except those in `--vla_gpus`. |
+| `--task_suite` | libero_90 | LIBERO training suite: libero_spatial, libero_object, libero_goal, libero_10, libero_90 |
+| `--task_ids` | all | Task indices: `all`, ranges (`0-89`), or comma-separated (`0,3,5-7`) |
+| `--eval_task_suite` | libero_10 | LIBERO suite for post-training evaluation |
+| `--eval_task_ids` | all | Task indices for evaluation (same syntax as `--task_ids`) |
+| `--skip_eval` | false | Skip automatic post-training evaluation |
+| `--vla_gpus` | 0,1,2 | Comma-separated GPU indices for Pi0.5 VLA. One model per GPU for parallel rollouts. |
+| `--attack_gpus` | 3 (auto) | GPU(s) for agent training (vLLM/ART). Default: all visible GPUs except those in `--vla_gpus`. |
 | `--model_name` | qwen2.5-3B | ART model name for the attack agent |
 | `--base_model` | Qwen/Qwen2.5-3B-Instruct | HuggingFace model for the attack agent |
 | `--vla_config_name` | pi05_libero | OpenPI config for Pi0.5 |
@@ -300,18 +361,44 @@ python train_vla.py \
 | `--episodes_per_task` | 3 | Initial states (episodes) per task when building scenarios. |
 | `--trajectories_per_group` | 4 | Rollouts per GRPO group (same scenario, different agent rollouts). |
 | `--groups_per_step` | 4 | Scenario groups gathered before each training step. |
-| `--rollout_workers` | 4 | Thread pool size for parallel VLA rollouts. MuJoCo runs in threads; VLA inference is serialised per GPU via lock. Use 4–8 for faster gathering. |
+| `--rollout_workers` | 24 | Concurrent rollout episodes (8 per VLA GPU). MuJoCo runs on CPU threads; VLA inference is serialised per GPU via lock. |
 | `--max_steps` | suite default | Override max env steps per episode (optional). Suite defaults: spatial 220, object 280, goal 300, libero_10 520, libero_90 400. |
 
-**LIBERO task suites and train/test:** LIBERO defines several task suites (see `LIBERO/libero/libero/benchmark/libero_suite_task_map.py`): **libero_spatial**, **libero_object**, **libero_goal** (10 tasks each), **libero_10** (10 tasks, standard benchmark), and **libero_90** (90 tasks, long-tail set). Conventionally, **libero_90** is used as the 90 train tasks and **libero_10** as the 10 test tasks. In this framework, the number of train tasks is whatever you pass via `--task_suite` and `--task_ids` (e.g. `--task_suite libero_90 --task_ids 0,1,...,89` for all 90, or a subset). There is no built-in held-out test set for LIBERO; periodic evaluation during training uses the same tasks. For a standard split, train with `--task_suite libero_90` (and chosen task_ids) and evaluate on libero_10 by running with `--task_suite libero_10` and the desired task indices in a separate run.
+**LIBERO task suites and train/eval:** LIBERO defines several task suites (see `LIBERO/libero/libero/benchmark/libero_suite_task_map.py`): **libero_spatial**, **libero_object**, **libero_goal** (10 tasks each), **libero_10** (10 tasks, standard benchmark), and **libero_90** (90 tasks, long-tail set). By default, `train_vla.py` trains on **libero_90** (all 90 tasks) and automatically evaluates on **libero_10** (10 held-out tasks) after training. Override with `--task_suite`, `--task_ids`, `--eval_task_suite`, and `--eval_task_ids`. Use `--skip_eval` to disable post-training evaluation. For standalone evaluation, use `eval_vla_attack.py` which defaults to `libero_10`.
 
-**GPU layout and memory:**
+**GPU requirements: 4x A100-80GB (or equivalent)**
 
-GPUs listed in `--vla_gpus` run Pi0.5 VLA rollouts: **one model copy per VLA GPU** for parallel rollouts (each GPU has its own JAX device and lock). All other visible GPUs are used for the attack agent (vLLM + LoRA via ART). The script auto-detects visible GPUs and assigns everything not in `--vla_gpus` to `--attack_gpus`. On SLURM, indices are logical into the allocated GPU list. Override with `VLA_GPUS=0 ATTACK_GPUS=1,2,3` or `VLA_GPU=0` (single GPU) if needed.
+The default configuration uses 4 GPUs. Running `python train_vla.py` with no arguments uses:
 
-| GPUs | Role | Model | Params | Typical VRAM |
-|------|------|-------|--------|---------------|
-| `--vla_gpus` (e.g. 0 or 0,1,2) | VLA rollouts (victim) | Pi0.5 per GPU (Gemma 2B + action expert + SigLIP) | ~2.7B each | ~9 GiB per GPU |
-| `--attack_gpus` | Agent training | Qwen2.5-3B-Instruct (vLLM + LoRA) | ~3B | ~9–10 GiB per GPU |
+| Setting | Default |
+|---------|---------|
+| `--vla_gpus` | `0,1,2` (3 Pi0.5-LIBERO copies) |
+| `--attack_gpus` | `3` (auto-detected) |
+| `--rollout_workers` | `24` (8 per VLA GPU) |
+| `--task_suite` | `libero_90` (all 90 train tasks) |
+| `--task_ids` | `all` |
+| `--eval_task_suite` | `libero_10` (10 eval tasks) |
+| `--eval_task_ids` | `all` |
+| VLA model | Pi0.5-LIBERO (auto-download from GCS) |
+| Attack agent | Qwen/Qwen2.5-3B-Instruct |
 
-Single-GPU VLA: `--vla_gpus 0` — one Pi0.5 on GPU 0; rollouts are serialised per call (parallelism comes from `--rollout_workers` threads doing MuJoCo and overlapping work). Multi-GPU VLA: `--vla_gpus 0,1,2` — three Pi0.5 copies; rollouts can run in parallel across GPUs. On a 4-GPU node (e.g. L40S): e.g. `--vla_gpus 0 --attack_gpus 1,2,3` or `--vla_gpus 0,1 --attack_gpus 2,3`. On SLURM, request `--gres=gpu:2` (minimum) or more.
+**Per-GPU memory breakdown:**
+
+| GPU | Role | Model | Peak VRAM | Headroom (80 GiB) |
+|-----|------|-------|-----------|-------------------|
+| 0 | VLA rollouts | Pi0.5-LIBERO (2.7B, bf16) | ~9 GiB | ~71 GiB free |
+| 1 | VLA rollouts | Pi0.5-LIBERO (2.7B, bf16) | ~9 GiB | ~71 GiB free |
+| 2 | VLA rollouts | Pi0.5-LIBERO (2.7B, bf16) | ~9 GiB | ~71 GiB free |
+| 3 | Agent train + inference | Qwen2.5-3B (vLLM + LoRA) | ~52 GiB | ~28 GiB free |
+| **Total** | | | **~79 GiB** | of 320 GiB (25%) |
+
+GPU 0-2 each hold one Pi0.5 model copy; the 24 rollout worker threads are assigned round-robin so up to 3 VLA inferences run in parallel across GPUs while MuJoCo steps run concurrently on CPU. GPU 3 runs vLLM with `gpu_memory_utilization=0.65` (pre-allocates KV cache).
+
+For a **2-GPU** setup: `python train_vla.py --vla_gpus 0 --attack_gpus 1 --rollout_workers 8`.
+On SLURM, indices are logical into the allocated GPU list. Override with `VLA_GPUS=0,1,2 ATTACK_GPUS=3` env vars if needed.
+
+**Tip — kill ghost threads on a GPU:** If a crashed or interrupted run leaves processes holding the GPU, you can free the device and then check memory usage (replace `nvidia3` with your GPU device, e.g. `nvidia0`, `nvidia1`):
+
+```bash
+fuser -k /dev/nvidia3 2>/dev/null; sleep 2; nvidia-smi --query-gpu=index,memory.used --format=csv
+```

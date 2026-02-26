@@ -41,7 +41,7 @@ load_dotenv()
 ATTACK_BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 
 EVAL_BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
-PROJECT_NAME = "hotpotqa-attack"
+PROJECT_NAME = "libero-vla-attack"
 MODEL_NAME = "qwen2.5-3b-attacker"
 
 DEFAULT_STEPS = 50

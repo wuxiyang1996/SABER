@@ -4,15 +4,21 @@ Trains an LLM attack agent to perturb instructions/observations fed to
 π0.5 in LIBERO, optimising for a single declared attack objective via
 Group Relative Policy Optimisation (GRPO).
 
+By default, trains on **libero_90** (all 90 LIBERO tasks) and automatically
+evaluates on **libero_10** (10 held-out tasks) after training completes.
+
 Usage
 -----
+    # Default: train on libero_90, eval on libero_10
+    python train_vla.py
+
+    # Custom suite / task subset
     python train_vla.py \\
-        --objective task_failure \\
-        --tool_sets token,char,prompt \\
-        --task_suite libero_spatial \\
-        --task_ids 0,1,2 \\
-        --model_name <your-model> \\
-        --stealth_weight 0.3
+        --task_suite libero_spatial --task_ids 0-4 \\
+        --eval_task_suite libero_10 --eval_task_ids all
+
+    # Skip post-training evaluation
+    python train_vla.py --skip_eval
 
 The script:
   1. Loads the Pi0.5 VLA model (once, shared across all rollouts).
@@ -25,6 +31,7 @@ The script:
            c) runs the perturbed VLA episode,
            d) computes reward.
        - The ``LocalBackend`` trains the model on trajectory groups.
+  4. Runs post-training evaluation on the eval suite (unless ``--skip_eval``).
 
 Reference:
   - ART GRPO: https://art.openpipe.ai
@@ -53,8 +60,8 @@ warnings.filterwarnings(
 # ---- GPU layout: resolve early so CUDA_VISIBLE_DEVICES is set before
 #      any CUDA / PyTorch / JAX import.
 #
-#   GPU 0 (default, or --vla_gpus) →  Pi0.5 VLA model(s) — rollouts (JAX)
-#   Remaining GPU(s) (--attack_gpus) →  Attack agent training (vLLM / ART)
+#   GPU 0,1,2 (default, or --vla_gpus) →  Pi0.5 VLA model(s) — rollouts (JAX)
+#   GPU 3 (default, or --attack_gpus) →  Attack agent training (vLLM / ART)
 #
 # On SLURM, CUDA_VISIBLE_DEVICES is pre-set to *all* allocated GPUs
 # (e.g. "0,1,2,3" or "4,5,6,7").  JAX initialises on every visible GPU,
@@ -72,7 +79,7 @@ def _early_resolve_vla_gpus() -> list[int]:
             raw = tok.split("=", 1)[1]
             break
     if raw is None:
-        raw = os.environ.get("VLA_GPUS", os.environ.get("VLA_GPU", "0"))
+        raw = os.environ.get("VLA_GPUS", os.environ.get("VLA_GPU", "0,1,2"))
     return [int(g.strip()) for g in raw.split(",")]
 
 _VLA_GPUS = _early_resolve_vla_gpus()
@@ -122,8 +129,10 @@ _VLA_GPUS_PHYSICAL = ",".join(
 )
 os.environ["CUDA_VISIBLE_DEVICES"] = _VLA_GPUS_PHYSICAL
 
-# JAX memory settings — don't pre-allocate; allocate on demand up to 90%.
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.90")
+# JAX memory settings — don't pre-allocate; cap at 30% per GPU (~14 GiB on
+# 48 GiB L40S).  Pi0.5 inference needs ~9 GiB; 0.30 leaves room for vLLM
+# (attack agent) if sharing GPUs.  Override with env var if needed.
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.30")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 # ---- Model / data cache directory --------------------------------------
@@ -177,7 +186,9 @@ from art.utils import iterate_dataset
 from agent.vla_rollout import (
     ToolSet,
     VLAAttackScenario,
+    build_scenarios,
     clear_baseline_cache,
+    parse_task_ids,
     set_vla_model,
     set_vla_models,
     vla_attack_rollout,
@@ -199,8 +210,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OBJECTIVE = "task_failure"
 DEFAULT_TOOL_SETS = "token,char,prompt"
-DEFAULT_TASK_SUITE = "libero_spatial"
-DEFAULT_TASK_IDS = "0"
+DEFAULT_TASK_SUITE = "libero_90"
+DEFAULT_TASK_IDS = "all"
 DEFAULT_EPISODES_PER_TASK = 3        # initial states per task
 DEFAULT_TRAJECTORIES_PER_GROUP = 4   # GRPO group size
 DEFAULT_GROUPS_PER_STEP = 4          # groups gathered before one train step
@@ -212,46 +223,6 @@ DEFAULT_MAX_STEPS = None  # use suite default
 
 
 # ============================================================================
-# Scenario generation
-# ============================================================================
-
-def build_scenarios(
-    objective: AttackObjective,
-    tool_sets: list[ToolSet],
-    task_suite_name: str,
-    task_ids: list[int],
-    episodes_per_task: int,
-    stealth_weight: float,
-    max_steps: int | None = None,
-    max_turns: int = 5,
-    replan_steps: int = 10,
-    seed: int = 7,
-) -> list[VLAAttackScenario]:
-    """Build a list of VLAAttackScenario for training.
-
-    Each (task_id, episode_idx) pair produces one scenario.
-    """
-    scenarios = []
-    for tid in task_ids:
-        for ep in range(episodes_per_task):
-            scenarios.append(
-                VLAAttackScenario(
-                    task_suite_name=task_suite_name,
-                    task_id=tid,
-                    episode_idx=ep,
-                    seed=seed,
-                    objective=objective,
-                    tool_sets=list(tool_sets),
-                    stealth_weight=stealth_weight,
-                    max_steps=max_steps,
-                    max_turns=max_turns,
-                    replan_steps=replan_steps,
-                )
-            )
-    return scenarios
-
-
-# ============================================================================
 # Main training loop
 # ============================================================================
 
@@ -259,18 +230,26 @@ async def train(args: argparse.Namespace) -> None:
     """Run GRPO training for the VLA attack agent."""
 
     # --- Configure thread pool for parallel VLA rollouts ---------------
+    # With async pipelining, the thread pool handles short-lived tasks:
+    # VLA inference calls (GPU) and MuJoCo step chunks (CPU).  Multiple
+    # MuJoCo chunks can run concurrently on separate CPU cores while one
+    # VLA inference runs on GPU.  Use more threads than before.
     import concurrent.futures
     loop = asyncio.get_running_loop()
     n_workers = getattr(args, "rollout_workers", 4)
+    pool_size = max(n_workers * 2, 8)
     loop.set_default_executor(
-        concurrent.futures.ThreadPoolExecutor(max_workers=n_workers),
+        concurrent.futures.ThreadPoolExecutor(max_workers=pool_size),
     )
-    logger.info("Thread pool: %d workers for parallel VLA rollouts.", n_workers)
+    logger.info(
+        "Thread pool: %d threads (%d rollout workers × 2) for pipelined "
+        "VLA inference + MuJoCo stepping.", pool_size, n_workers,
+    )
 
     # --- Parse objective and tool sets --------------------------------
     objective = AttackObjective(args.objective)
     tool_sets = [ToolSet(t.strip()) for t in args.tool_sets.split(",")]
-    task_ids = [int(t.strip()) for t in args.task_ids.split(",")]
+    task_ids = parse_task_ids(args.task_ids, args.task_suite)
 
     logger.info("=" * 60)
     logger.info("VLA Attack Agent — GRPO Training")
@@ -289,6 +268,70 @@ async def train(args: argparse.Namespace) -> None:
     logger.info("  Rollout workers:  %d threads", args.rollout_workers)
     logger.info("  Stealth weight:   %s", args.stealth_weight)
     logger.info("=" * 60)
+
+    # --- Create timestamped run directory --------------------------------
+    from datetime import datetime
+    _timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _vla_tag = args.vla_config_name.replace("/", "_")
+    _agent_tag = args.model_name.replace("/", "_")
+    _run_name = f"{_timestamp}_{_vla_tag}__{_agent_tag}"
+    _run_dir = os.path.join(_ART_OUTPUT_ROOT, "runs", _run_name)
+    os.makedirs(_run_dir, exist_ok=True)
+    logger.info("Run directory: %s", _run_dir)
+
+    # File-based logging — mirror all log output to the run directory
+    _file_handler = logging.FileHandler(os.path.join(_run_dir, "train.log"))
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(name)s %(levelname)s %(message)s",
+    ))
+    logging.getLogger().addHandler(_file_handler)
+
+    # Save full run config
+    _run_config = {
+        "timestamp": _timestamp,
+        "run_name": _run_name,
+        "vla_model": {
+            "config_name": args.vla_config_name,
+            "checkpoint": args.vla_checkpoint,
+            "gpus": args.vla_gpus,
+        },
+        "attack_agent": {
+            "model_name": args.model_name,
+            "base_model": args.base_model,
+            "project_name": args.project_name,
+            "gpus": args.attack_gpus,
+            "gpu_memory_utilization": args.gpu_memory_utilization,
+        },
+        "training": {
+            "objective": args.objective,
+            "tool_sets": args.tool_sets,
+            "task_suite": args.task_suite,
+            "task_ids": task_ids,
+            "episodes_per_task": args.episodes_per_task,
+            "trajectories_per_group": args.trajectories_per_group,
+            "groups_per_step": args.groups_per_step,
+            "num_epochs": args.num_epochs,
+            "learning_rate": args.learning_rate,
+            "stealth_weight": args.stealth_weight,
+            "max_turns": args.max_turns,
+            "replan_steps": args.replan_steps,
+            "max_steps": args.max_steps,
+            "seed": args.seed,
+            "rollout_workers": args.rollout_workers,
+        },
+        "eval": {
+            "eval_task_suite": args.eval_task_suite,
+            "eval_task_ids": args.eval_task_ids,
+            "eval_episodes_per_task": args.eval_episodes_per_task,
+            "skip_eval": args.skip_eval,
+        },
+    }
+    with open(os.path.join(_run_dir, "run_config.json"), "w") as _f:
+        json.dump(_run_config, _f, indent=2, default=str)
+    logger.info("Run config saved to %s/run_config.json", _run_dir)
+
+    # Per-step metrics log (JSONL — one JSON object per training step)
+    _metrics_log_path = os.path.join(_run_dir, "step_metrics.jsonl")
 
     # --- Resolve GPU layout from CLI -----------------------------------
     vla_gpus = [int(g.strip()) for g in args.vla_gpus.split(",")]
@@ -437,8 +480,10 @@ async def train(args: argparse.Namespace) -> None:
     # Putting it in init_args caused vLLM to silently use its own
     # default of 0.9 for gpu_memory_utilization.
     #
-    # tensor_parallel_size is left at 1 (default).  Qwen2.5-3B (~6 GiB)
-    # fits comfortably on a single L40S.  TP > 1 triggers vLLM
+    # tensor_parallel_size is left at 1 (default).  So vLLM uses a single
+    # GPU from the attack set; when --attack_gpus has multiple IDs, the
+    # subprocess sees them (CUDA_VISIBLE_DEVICES) but vLLM uses the first.
+    # Qwen2.5-3B (~6 GiB) fits on one L40S.  TP > 1 triggers vLLM
     # multiprocessing which hits a pydantic-core pickling bug.
     attack_model = art.TrainableModel(
         name=args.model_name,
@@ -454,10 +499,41 @@ async def train(args: argparse.Namespace) -> None:
         ),
     )
 
+    # --- Patch model-service subprocess to capture stdout/stderr -----
+    # The ART backend spawns a child process ("model-service") for
+    # unsloth + vLLM.  If it crashes (e.g. SIGABRT), the real error is
+    # lost unless we redirect output to a log file.
+    _model_service_log = os.path.join(_ART_OUTPUT_ROOT, "model-service-debug.log")
+    os.makedirs(os.path.dirname(_model_service_log), exist_ok=True)
+
+    import mp_actors.move as _mp_move_module
+    _orig_move_to_child = _mp_move_module.move_to_child_process
+
+    def _move_to_child_with_log(obj, log_file=None, process_name=None):
+        if process_name == "model-service" and log_file is None:
+            log_file = _model_service_log
+            logger.info("Model-service subprocess log → %s", log_file)
+        return _orig_move_to_child(obj, log_file=log_file, process_name=process_name)
+
+    _mp_move_module.move_to_child_process = _move_to_child_with_log
+
     from art.local.backend import LocalBackend
+    import art.local.backend as _alb
+    _alb.move_to_child_process = _move_to_child_with_log
+
     backend = LocalBackend(path=_ART_OUTPUT_ROOT)
     logger.info("ART output (checkpoints, logs): %s", _ART_OUTPUT_ROOT)
-    await attack_model.register(backend)
+    try:
+        await attack_model.register(backend)
+    except RuntimeError as exc:
+        if os.path.isfile(_model_service_log):
+            with open(_model_service_log) as _f:
+                _log_tail = _f.read()[-8000:]
+            if _log_tail.strip():
+                logger.error(
+                    "model-service subprocess log (last 8 kB):\n%s", _log_tail,
+                )
+        raise
 
     # --- Training loop ------------------------------------------------
     train_iterator = iterate_dataset(
@@ -503,22 +579,174 @@ async def train(args: argparse.Namespace) -> None:
             groups, metrics=result.metrics, step=result.step, split="train",
         )
 
-        # Log summary statistics
-        rewards = [
-            t.reward
-            for g in groups
-            for t in g.trajectories
-        ]
-        if rewards:
-            logger.info(
-                "Step %d — mean reward (attacked rollouts): %.3f, min: %.3f, max: %.3f",
-                batch.step,
-                sum(rewards) / len(rewards),
-                min(rewards),
-                max(rewards),
+        # Log summary statistics and evaluation metrics
+        from rwd_func.metrics import compute_metrics, print_metrics
+        step_metrics = compute_metrics(groups)
+        print_metrics(step_metrics, step=batch.step, logger_fn=logger.info)
+
+        # Append per-step metrics to the run's JSONL log
+        _step_record = {
+            "step": batch.step,
+            "epoch": batch.epoch,
+            "timestamp": datetime.now().isoformat(),
+            "n_groups": len(groups),
+            **step_metrics.to_dict(),
+        }
+        with open(_metrics_log_path, "a") as _mf:
+            _mf.write(json.dumps(_step_record, default=str) + "\n")
+
+        # Symlink latest checkpoint into the run directory
+        _current_step = result.step
+        try:
+            from art.utils.output_dirs import (
+                get_output_dir_from_model_properties,
+                get_step_checkpoint_dir,
             )
+            _model_out = get_output_dir_from_model_properties(
+                args.project_name, args.model_name, art_path=_ART_OUTPUT_ROOT,
+            )
+            _ckpt_src = get_step_checkpoint_dir(_model_out, _current_step)
+            if os.path.isdir(_ckpt_src):
+                _ckpt_link = os.path.join(_run_dir, "checkpoints", f"{_current_step:04d}")
+                os.makedirs(os.path.dirname(_ckpt_link), exist_ok=True)
+                if not os.path.exists(_ckpt_link):
+                    os.symlink(_ckpt_src, _ckpt_link)
+        except Exception:
+            pass
 
     logger.info("Training complete.")
+
+    # ---- Post-training evaluation on held-out suite ----------------------
+    if args.skip_eval:
+        logger.info("Skipping post-training evaluation (--skip_eval).")
+    else:
+        import time as _time
+        from rwd_func.metrics import (
+            compute_metrics_from_trajectories,
+            print_metrics as _print_metrics,
+            metrics_to_latex_row,
+        )
+
+        eval_task_ids = parse_task_ids(args.eval_task_ids, args.eval_task_suite)
+        logger.info("=" * 60)
+        logger.info("Post-training evaluation")
+        logger.info("=" * 60)
+        logger.info("  Eval suite:       %s", args.eval_task_suite)
+        logger.info("  Eval task IDs:    %s (%d tasks)", eval_task_ids, len(eval_task_ids))
+        logger.info("  Episodes/task:    %d", args.eval_episodes_per_task)
+
+        eval_scenarios = build_scenarios(
+            objective=objective,
+            tool_sets=tool_sets,
+            task_suite_name=args.eval_task_suite,
+            task_ids=eval_task_ids,
+            episodes_per_task=args.eval_episodes_per_task,
+            stealth_weight=args.stealth_weight,
+            max_steps=args.max_steps,
+            max_turns=args.max_turns,
+            replan_steps=args.replan_steps,
+            seed=args.seed,
+        )
+        logger.info("Built %d eval scenarios.", len(eval_scenarios))
+
+        all_eval_trajectories = []
+        t_eval_start = _time.time()
+
+        for i, scenario in enumerate(eval_scenarios):
+            clear_baseline_cache()
+            logger.info(
+                "Eval %d/%d: %s task %d, ep %d ...",
+                i + 1, len(eval_scenarios),
+                scenario.task_suite_name, scenario.task_id,
+                scenario.episode_idx,
+            )
+            eval_groups = await art.gather_trajectory_groups(
+                [
+                    art.TrajectoryGroup(
+                        vla_rollout_wrapped(scenario)
+                        for _ in range(1)
+                    )
+                ],
+                pbar_desc=f"eval {i + 1}/{len(eval_scenarios)}",
+            )
+            for g in eval_groups:
+                for t in g.trajectories:
+                    t.metadata["eval_scenario_idx"] = i
+                    all_eval_trajectories.append(t)
+
+        eval_elapsed = _time.time() - t_eval_start
+        logger.info(
+            "Evaluation done: %d trajectories in %.1fs",
+            len(all_eval_trajectories), eval_elapsed,
+        )
+
+        current_step = await attack_model.get_step()
+        eval_metrics = compute_metrics_from_trajectories(all_eval_trajectories)
+        _print_metrics(eval_metrics, step=current_step, logger_fn=logger.info)
+
+        latex_label = f"{args.eval_task_suite} (step {current_step})"
+        logger.info("LaTeX table row:\n%s", metrics_to_latex_row(eval_metrics, label=latex_label))
+
+        _eval_report_name = (
+            f"eval_step{current_step}_{args.eval_task_suite}"
+            f"_n{len(all_eval_trajectories)}.json"
+        )
+        report = {
+            "config": {
+                "run_name": _run_name,
+                "train_suite": args.task_suite,
+                "train_task_ids": task_ids,
+                "eval_suite": args.eval_task_suite,
+                "eval_task_ids": eval_task_ids,
+                "eval_episodes_per_task": args.eval_episodes_per_task,
+                "checkpoint_step": current_step,
+                "vla_config": args.vla_config_name,
+                "vla_checkpoint": args.vla_checkpoint,
+                "base_model": args.base_model,
+                "elapsed_seconds": eval_elapsed,
+            },
+            "summary": eval_metrics.to_dict(),
+            "per_task": {
+                k: {
+                    "count": s.count,
+                    "task_execution_rate": s.task_execution_rate,
+                    "attack_success_rate": s.attack_success_rate,
+                    "avg_reward": s.avg_reward,
+                    "avg_tools_called": s.avg_tools_called,
+                    "avg_chars_changed": s.avg_chars_changed,
+                    "avg_action_seq_length": s.avg_action_seq_length,
+                    "avg_constraint_violations": s.avg_constraint_violations,
+                }
+                for k, s in eval_metrics.per_task.items()
+            },
+            "per_episode": [
+                {
+                    "scenario_idx": t.metadata.get("eval_scenario_idx", i),
+                    "task_suite": t.metadata.get("task_suite", ""),
+                    "task_id": t.metadata.get("task_id", -1),
+                    "episode_idx": t.metadata.get("episode_idx", -1),
+                    "reward": t.reward,
+                    "baseline_success": t.metrics.get("baseline_success", 0),
+                    "attack_success": t.metrics.get("attack_success", 0),
+                    "num_tool_calls": t.metrics.get("num_tool_calls", 0),
+                }
+                for i, t in enumerate(all_eval_trajectories)
+            ],
+        }
+
+        # Save to the timestamped run directory
+        _run_eval_path = os.path.join(_run_dir, _eval_report_name)
+        with open(_run_eval_path, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        logger.info("Eval report saved to %s", _run_eval_path)
+
+        # Also save to the flat eval_reports/ for easy browsing
+        _flat_report_dir = os.path.join(_ART_OUTPUT_ROOT, "eval_reports")
+        os.makedirs(_flat_report_dir, exist_ok=True)
+        _flat_path = os.path.join(_flat_report_dir, _eval_report_name)
+        with open(_flat_path, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        logger.info("Eval report also saved to %s", _flat_path)
 
 
 # ============================================================================
@@ -568,7 +796,10 @@ def main():
     )
     parser.add_argument(
         "--task_ids", type=str, default=DEFAULT_TASK_IDS,
-        help="Comma-separated task indices within the suite.",
+        help=(
+            "Task indices within the suite.  Supports: 'all', ranges like "
+            "'0-89', or comma-separated '0,5,10-19'."
+        ),
     )
     parser.add_argument(
         "--episodes_per_task", type=int, default=DEFAULT_EPISODES_PER_TASK,
@@ -580,6 +811,29 @@ def main():
     )
     parser.add_argument("--seed", type=int, default=7, help="Environment seed.")
 
+    # --- Post-training evaluation config ---
+    parser.add_argument(
+        "--eval_task_suite", type=str, default="libero_10",
+        choices=["libero_spatial", "libero_object", "libero_goal",
+                 "libero_10", "libero_90"],
+        help="LIBERO task suite for post-training evaluation (default: libero_10).",
+    )
+    parser.add_argument(
+        "--eval_task_ids", type=str, default="all",
+        help=(
+            "Task indices for post-training evaluation.  Same syntax as "
+            "--task_ids ('all', ranges, comma-separated)."
+        ),
+    )
+    parser.add_argument(
+        "--eval_episodes_per_task", type=int, default=3,
+        help="Number of episodes per task during post-training evaluation.",
+    )
+    parser.add_argument(
+        "--skip_eval", action="store_true",
+        help="Skip automatic post-training evaluation on the eval suite.",
+    )
+
     # --- VLA model config ---
     parser.add_argument(
         "--vla_config_name", type=str, default="pi05_libero",
@@ -590,29 +844,30 @@ def main():
         help="Path to Pi0.5 checkpoint (None = auto-download base model).",
     )
 
-    # --- GPU layout (default: GPU 0 = VLA rollouts, remaining = agent) --
+    # --- GPU layout (default: GPU 0,1,2 = VLA rollouts, GPU 3 = agent) --
     parser.add_argument(
         "--vla_gpus", type=str,
-        default=os.environ.get("VLA_GPUS", os.environ.get("VLA_GPU", "0")),
+        default=os.environ.get("VLA_GPUS", os.environ.get("VLA_GPU", "0,1,2")),
         help=(
             "Comma-separated GPU indices for Pi0.5 VLA model(s) (JAX).  "
-            "One model copy is loaded per GPU for truly parallel rollouts.  "
-            "Default: '0'.  Example: '0,1,2' loads 3 models on GPUs 0-2."
+            "One model is loaded per GPU; rollouts use a round-robin pool for "
+            "parallel multi-GPU inference.  Default: '0,1,2' → 3 models."
         ),
     )
     parser.add_argument(
         "--attack_gpus", type=str, default=_ATTACK_GPUS,
         help=(
-            "GPU index (or comma-separated list) for the vLLM attack agent training.  "
-            "Default: all visible GPUs except --vla_gpu (e.g. '1,2,3' on a 4-GPU node).  "
-            "GPU 0 is reserved for VLA rollouts."
+            "GPU index (or comma-separated list) for the vLLM attack agent.  "
+            "Default: all visible GPUs except --vla_gpus (e.g. '1,2,3' on 4 GPUs).  "
+            "vLLM runs with tensor_parallel_size=1, so only the first GPU in this list is used."
         ),
     )
     parser.add_argument(
         "--gpu_memory_utilization", type=float, default=0.65,
         help=(
             "Fraction of GPU memory vLLM may use on each attack GPU.  "
-            "Conservative default 0.55 reduces OOM risk; raise to 0.65–0.70 on large GPUs if needed."
+            "If the model-service subprocess is killed (e.g. signal 6 / OOM), try 0.5 or 0.45; "
+            "for single-GPU (VLA and attack on same GPU) use 0.4–0.5."
         ),
     )
 
@@ -660,11 +915,13 @@ def main():
         help="Run evaluation every N training steps.",
     )
     parser.add_argument(
-        "--rollout_workers", type=int, default=4,
+        "--rollout_workers", type=int, default=24,
         help=(
-            "Thread pool size for parallel VLA rollouts.  Each worker runs "
-            "a rollout in its own thread (MuJoCo CPU work overlaps, VLA GPU "
-            "inference serialises via lock).  4-8 is a good range."
+            "Number of concurrent VLA rollout episodes.  Each worker runs "
+            "a rollout in its own thread: VLA inference is serialised per GPU "
+            "via a lock, while MuJoCo steps run concurrently on CPU.  "
+            "With multiple --vla_gpus, workers are assigned round-robin.  "
+            "Default 24 = 8 per GPU with 3 VLA GPUs (A100-80GB)."
         ),
     )
 
