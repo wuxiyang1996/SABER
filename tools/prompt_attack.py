@@ -16,7 +16,7 @@ Design principles:
   - Agent-driven: the LLM proposes the *entire* multi-token perturbation text
     via structured QA prompts — no hardcoded templates
   - Black-box: no model access needed
-  - Token-budget aware: enforces ≤ max_added_tokens (default 40)
+  - Char-budget aware: enforces ≤ max_added_chars (default 200 characters)
   - Composable: the agent can chain calls (e.g., verify_wrap + constraint_stack)
   - Minimal-looking: perturbations look like reasonable instruction elaborations
 
@@ -35,7 +35,7 @@ from typing import Optional
 # 0. Constants
 # ============================================================================
 
-DEFAULT_MAX_ADDED_TOKENS = 40  # strict budget for added tokens
+DEFAULT_MAX_ADDED_CHARS = 200  # strict budget for added characters
 
 PROMPT_ATTACK_TYPES = [
     "verify_wrap",
@@ -61,17 +61,20 @@ def _detokenize(tokens: list[str]) -> str:
     return " ".join(tokens)
 
 
-def _count_tokens(text: str) -> int:
-    """Approximate token count (whitespace-split)."""
-    return len(text.split())
+def _count_chars(text: str) -> int:
+    """Character count of the text."""
+    return len(text)
 
 
-def _enforce_budget(added_text: str, max_tokens: int) -> str:
-    """Truncate added_text to at most max_tokens words."""
-    words = added_text.split()
-    if len(words) <= max_tokens:
+def _enforce_budget(added_text: str, max_chars: int) -> str:
+    """Truncate added_text to at most max_chars characters (on word boundaries)."""
+    if len(added_text) <= max_chars:
         return added_text
-    return " ".join(words[:max_tokens])
+    truncated = added_text[:max_chars]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        truncated = truncated[:last_space]
+    return truncated
 
 
 def _numbered_token_list(text: str) -> list[dict]:
@@ -141,7 +144,7 @@ def apply_verify_wrap(
     text: str,
     clause: str,
     position: str = "suffix",
-    max_added_tokens: int = DEFAULT_MAX_ADDED_TOKENS,
+    max_added_chars: int = DEFAULT_MAX_ADDED_CHARS,
 ) -> dict:
     """Phase 2 (APPLY): Attach the agent-proposed verification clause.
 
@@ -149,15 +152,15 @@ def apply_verify_wrap(
         text: Original instruction.
         clause: The verification sentence (from agent's FIND response).
         position: "prefix" or "suffix".
-        max_added_tokens: Maximum tokens the clause may add.
+        max_added_chars: Maximum characters the clause may add.
 
     Returns:
-        dict with: original, perturbed, clause, position, added_tokens,
+        dict with: original, perturbed, clause, position, added_chars,
                    action, attack_type.
     """
-    clause = _enforce_budget(clause, max_added_tokens)
+    clause = _enforce_budget(clause, max_added_chars)
     clause = _ensure_trailing_period(clause)
-    added_tokens = _count_tokens(clause)
+    added_chars = _count_chars(clause)
 
     if position == "prefix":
         perturbed = clause + " " + text
@@ -170,7 +173,7 @@ def apply_verify_wrap(
         "perturbed": perturbed,
         "clause": clause,
         "position": position,
-        "added_tokens": added_tokens,
+        "added_chars": added_chars,
         "action": "verify_wrap",
         "attack_type": "verify_wrap",
     }
@@ -222,7 +225,7 @@ def apply_decompose_wrap(
     text: str,
     steps: str,
     mode: str = "replace",
-    max_added_tokens: int = DEFAULT_MAX_ADDED_TOKENS,
+    max_added_chars: int = DEFAULT_MAX_ADDED_CHARS,
 ) -> dict:
     """Phase 2 (APPLY): Apply the agent's decomposed rewrite.
 
@@ -232,13 +235,13 @@ def apply_decompose_wrap(
         mode: "replace" — replace instruction with steps;
               "prefix"  — prepend steps then original;
               "suffix"  — append steps after original.
-        max_added_tokens: Maximum tokens for the decomposition.
+        max_added_chars: Maximum characters for the decomposition.
 
     Returns:
-        dict with: original, perturbed, steps, mode, added_tokens,
+        dict with: original, perturbed, steps, mode, added_chars,
                    action, attack_type.
     """
-    steps = _enforce_budget(steps, max_added_tokens)
+    steps = _enforce_budget(steps, max_added_chars)
 
     if mode == "replace":
         perturbed = steps
@@ -247,14 +250,14 @@ def apply_decompose_wrap(
     else:  # suffix
         perturbed = _ensure_trailing_period(text) + " " + steps
 
-    added_tokens = _count_tokens(perturbed) - _count_tokens(text)
+    added_chars = _count_chars(perturbed) - _count_chars(text)
 
     return {
         "original": text,
         "perturbed": perturbed,
         "steps": steps,
         "mode": mode,
-        "added_tokens": max(0, added_tokens),
+        "added_chars": max(0, added_chars),
         "action": "decompose_wrap",
         "attack_type": "decompose_wrap",
     }
@@ -308,22 +311,22 @@ def find_uncertainty_clause_targets(text: str) -> dict:
 def apply_uncertainty_clause(
     text: str,
     clause: str,
-    max_added_tokens: int = DEFAULT_MAX_ADDED_TOKENS,
+    max_added_chars: int = DEFAULT_MAX_ADDED_CHARS,
 ) -> dict:
     """Phase 2 (APPLY): Append the agent-proposed uncertainty clause.
 
     Args:
         text: Original instruction.
         clause: The conditional clause (from agent's FIND response).
-        max_added_tokens: Maximum tokens the clause may add.
+        max_added_chars: Maximum characters the clause may add.
 
     Returns:
-        dict with: original, perturbed, clause, added_tokens,
+        dict with: original, perturbed, clause, added_chars,
                    action, attack_type.
     """
-    clause = _enforce_budget(clause, max_added_tokens)
+    clause = _enforce_budget(clause, max_added_chars)
     clause = _ensure_trailing_period(clause)
-    added_tokens = _count_tokens(clause)
+    added_chars = _count_chars(clause)
 
     base = _ensure_trailing_period(text)
     perturbed = base + " " + clause
@@ -332,7 +335,7 @@ def apply_uncertainty_clause(
         "original": text,
         "perturbed": perturbed,
         "clause": clause,
-        "added_tokens": added_tokens,
+        "added_chars": added_chars,
         "action": "uncertainty_clause",
         "attack_type": "uncertainty_clause",
     }
@@ -389,7 +392,7 @@ def apply_constraint_stack(
     text: str,
     constraints: list[str],
     style: str = "comma",
-    max_added_tokens: int = DEFAULT_MAX_ADDED_TOKENS,
+    max_added_chars: int = DEFAULT_MAX_ADDED_CHARS,
 ) -> dict:
     """Phase 2 (APPLY): Append the agent-proposed constraints.
 
@@ -400,13 +403,12 @@ def apply_constraint_stack(
                "comma"   — join with commas after the original
                "bullets" — append as bullet-point list
                "inline"  — join with "and" connectors
-        max_added_tokens: Maximum total added tokens across all constraints.
+        max_added_chars: Maximum total added characters across all constraints.
 
     Returns:
-        dict with: original, perturbed, constraints, style, added_tokens,
+        dict with: original, perturbed, constraints, style, added_chars,
                    action, attack_type.
     """
-    # Filter empty constraints
     constraints = [c.strip() for c in constraints if c.strip() and c.strip().upper() != "NONE"]
     if not constraints:
         return {
@@ -414,7 +416,7 @@ def apply_constraint_stack(
             "perturbed": text,
             "constraints": [],
             "style": style,
-            "added_tokens": 0,
+            "added_chars": 0,
             "action": "no_op",
             "attack_type": "constraint_stack",
             "reason": "No valid constraints provided.",
@@ -435,8 +437,8 @@ def apply_constraint_stack(
     else:  # comma
         joined = ", ".join(constraints)
 
-    joined = _enforce_budget(joined, max_added_tokens)
-    added_tokens = _count_tokens(joined)
+    joined = _enforce_budget(joined, max_added_chars)
+    added_chars = _count_chars(joined)
 
     if style == "bullets":
         perturbed = _ensure_trailing_period(text) + " " + joined
@@ -448,7 +450,7 @@ def apply_constraint_stack(
         "perturbed": perturbed,
         "constraints": constraints,
         "style": style,
-        "added_tokens": added_tokens,
+        "added_chars": added_chars,
         "action": "constraint_stack",
         "attack_type": "constraint_stack",
     }
@@ -496,27 +498,27 @@ def find_structure_inject_targets(text: str) -> dict:
 def apply_structure_inject(
     text: str,
     rewrite: str,
-    max_added_tokens: int = DEFAULT_MAX_ADDED_TOKENS,
+    max_added_chars: int = DEFAULT_MAX_ADDED_CHARS,
 ) -> dict:
     """Phase 2 (APPLY): Replace instruction with the agent's structured rewrite.
 
     Args:
         text: Original instruction.
         rewrite: The structured version (from agent's FIND response).
-        max_added_tokens: Maximum total tokens for the rewrite.
+        max_added_chars: Maximum total characters for the rewrite.
 
     Returns:
-        dict with: original, perturbed, rewrite, added_tokens,
+        dict with: original, perturbed, rewrite, added_chars,
                    action, attack_type.
     """
-    rewrite = _enforce_budget(rewrite, _count_tokens(text) + max_added_tokens)
-    added_tokens = max(0, _count_tokens(rewrite) - _count_tokens(text))
+    rewrite = _enforce_budget(rewrite, _count_chars(text) + max_added_chars)
+    added_chars = max(0, _count_chars(rewrite) - _count_chars(text))
 
     return {
         "original": text,
         "perturbed": rewrite,
         "rewrite": rewrite,
-        "added_tokens": added_tokens,
+        "added_chars": added_chars,
         "action": "structure_inject",
         "attack_type": "structure_inject",
     }
@@ -577,7 +579,7 @@ def apply_objective_inject(
     directive: str,
     position: str = "suffix",
     insert_at_index: Optional[int] = None,
-    max_added_tokens: int = DEFAULT_MAX_ADDED_TOKENS,
+    max_added_chars: int = DEFAULT_MAX_ADDED_CHARS,
 ) -> dict:
     """Phase 2 (APPLY): Insert the agent-proposed objective directive.
 
@@ -586,17 +588,16 @@ def apply_objective_inject(
         directive: The directive phrase (from agent's FIND response).
         position: "prefix", "suffix", or "inline".
         insert_at_index: If position="inline", insert before this word index.
-        max_added_tokens: Maximum tokens the directive may add.
+        max_added_chars: Maximum characters the directive may add.
 
     Returns:
         dict with: original, perturbed, directive, position,
-                   insert_at_index, added_tokens, action, attack_type.
+                   insert_at_index, added_chars, action, attack_type.
     """
-    directive = _enforce_budget(directive, max_added_tokens)
-    added_tokens = _count_tokens(directive)
+    directive = _enforce_budget(directive, max_added_chars)
+    added_chars = _count_chars(directive)
 
     if position == "prefix":
-        # Capitalize directive, lowercase original start
         d = directive.rstrip(".!?, ")
         if text and text[0].isupper():
             perturbed = d.capitalize() + ", " + text[0].lower() + text[1:]
@@ -621,7 +622,7 @@ def apply_objective_inject(
         "directive": directive,
         "position": position,
         "insert_at_index": insert_at_index,
-        "added_tokens": added_tokens,
+        "added_chars": added_chars,
         "action": "objective_inject",
         "attack_type": "objective_inject",
     }
@@ -763,9 +764,9 @@ PROMPT_ATTACK_TOOL_SCHEMAS = [
                         "enum": ["prefix", "suffix"],
                         "description": "Where to attach the clause.",
                     },
-                    "max_added_tokens": {
+                    "max_added_chars": {
                         "type": "integer",
-                        "description": "Max tokens to add (default 40).",
+                        "description": "Max characters to add (default 200).",
                     },
                 },
                 "required": ["text", "clause"],
@@ -806,9 +807,9 @@ PROMPT_ATTACK_TOOL_SCHEMAS = [
                             "'prefix'/'suffix' adds steps before/after."
                         ),
                     },
-                    "max_added_tokens": {
+                    "max_added_chars": {
                         "type": "integer",
-                        "description": "Max tokens (default 40).",
+                        "description": "Max characters to add (default 200).",
                     },
                 },
                 "required": ["text", "steps"],
@@ -841,9 +842,9 @@ PROMPT_ATTACK_TOOL_SCHEMAS = [
                             "(8–20 tokens, from your FIND analysis)."
                         ),
                     },
-                    "max_added_tokens": {
+                    "max_added_chars": {
                         "type": "integer",
-                        "description": "Max tokens to add (default 40).",
+                        "description": "Max characters to add (default 200).",
                     },
                 },
                 "required": ["text", "clause"],
@@ -886,9 +887,9 @@ PROMPT_ATTACK_TOOL_SCHEMAS = [
                             "'inline' uses 'and' connectors."
                         ),
                     },
-                    "max_added_tokens": {
+                    "max_added_chars": {
                         "type": "integer",
-                        "description": "Max total added tokens (default 40).",
+                        "description": "Max total added characters (default 200).",
                     },
                 },
                 "required": ["text", "constraints"],
@@ -921,9 +922,9 @@ PROMPT_ATTACK_TOOL_SCHEMAS = [
                             "(from your FIND analysis)."
                         ),
                     },
-                    "max_added_tokens": {
+                    "max_added_chars": {
                         "type": "integer",
-                        "description": "Max extra tokens beyond original (default 40).",
+                        "description": "Max extra characters beyond original (default 200).",
                     },
                 },
                 "required": ["text", "rewrite"],
@@ -968,9 +969,9 @@ PROMPT_ATTACK_TOOL_SCHEMAS = [
                             "index (0-based)."
                         ),
                     },
-                    "max_added_tokens": {
+                    "max_added_chars": {
                         "type": "integer",
-                        "description": "Max tokens to add (default 40).",
+                        "description": "Max characters to add (default 200).",
                     },
                 },
                 "required": ["text", "directive"],

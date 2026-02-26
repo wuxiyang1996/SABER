@@ -338,9 +338,10 @@ def build_attack_tools(state: AttackState) -> list:
     # Prompt-level — APPLY
     @tool
     def apply_verify_wrap(text: str, clause: str, position: str = "suffix",
-                          max_added_tokens: int = 40) -> str:
-        """Phase 2 (APPLY): Attach a verification clause (prefix or suffix)."""
-        result = _prompt.apply_verify_wrap(text, clause, position, max_added_tokens)
+                          max_added_chars: int = 200) -> str:
+        """Phase 2 (APPLY): Attach a verification clause (prefix or suffix).
+        max_added_chars: character budget (default 200)."""
+        result = _prompt.apply_verify_wrap(text, clause, position, max_added_chars)
         if result.get("perturbed"):
             state.record_perturbation(result["perturbed"], "apply_verify_wrap")
         else:
@@ -349,10 +350,11 @@ def build_attack_tools(state: AttackState) -> list:
 
     @tool
     def apply_decompose_wrap(text: str, steps: str, mode: str = "replace",
-                             max_added_tokens: int = 40) -> str:
+                             max_added_chars: int = 200) -> str:
         """Phase 2 (APPLY): Rewrite as numbered steps for staged execution.
-        mode: 'replace', 'prefix', or 'suffix'."""
-        result = _prompt.apply_decompose_wrap(text, steps, mode, max_added_tokens)
+        mode: 'replace', 'prefix', or 'suffix'.
+        max_added_chars: character budget (default 200)."""
+        result = _prompt.apply_decompose_wrap(text, steps, mode, max_added_chars)
         if result.get("perturbed"):
             state.record_perturbation(result["perturbed"], "apply_decompose_wrap")
         else:
@@ -361,9 +363,10 @@ def build_attack_tools(state: AttackState) -> list:
 
     @tool
     def apply_uncertainty_clause(text: str, clause: str,
-                                 max_added_tokens: int = 40) -> str:
-        """Phase 2 (APPLY): Append an 'if uncertain' conditional clause."""
-        result = _prompt.apply_uncertainty_clause(text, clause, max_added_tokens)
+                                 max_added_chars: int = 200) -> str:
+        """Phase 2 (APPLY): Append an 'if uncertain' conditional clause.
+        max_added_chars: character budget (default 200)."""
+        result = _prompt.apply_uncertainty_clause(text, clause, max_added_chars)
         if result.get("perturbed"):
             state.record_perturbation(result["perturbed"], "apply_uncertainty_clause")
         else:
@@ -373,11 +376,12 @@ def build_attack_tools(state: AttackState) -> list:
     @tool
     def apply_constraint_stack(text: str, constraints: list[str],
                                style: str = "comma",
-                               max_added_tokens: int = 40) -> str:
+                               max_added_chars: int = 200) -> str:
         """Phase 2 (APPLY): Append 2-3 extra constraints.
-        style: 'comma', 'bullets', or 'inline'."""
+        style: 'comma', 'bullets', or 'inline'.
+        max_added_chars: character budget (default 200)."""
         result = _prompt.apply_constraint_stack(
-            text, constraints, style, max_added_tokens,
+            text, constraints, style, max_added_chars,
         )
         if result.get("perturbed"):
             state.record_perturbation(result["perturbed"], "apply_constraint_stack")
@@ -387,10 +391,11 @@ def build_attack_tools(state: AttackState) -> list:
 
     @tool
     def apply_structure_inject(text: str, rewrite: str,
-                               max_added_tokens: int = 40) -> str:
+                               max_added_chars: int = 200) -> str:
         """Phase 2 (APPLY): Replace with a structured rewrite (key-value /
-        bullets / numbered steps)."""
-        result = _prompt.apply_structure_inject(text, rewrite, max_added_tokens)
+        bullets / numbered steps).
+        max_added_chars: character budget (default 200)."""
+        result = _prompt.apply_structure_inject(text, rewrite, max_added_chars)
         if result.get("perturbed"):
             state.record_perturbation(result["perturbed"], "apply_structure_inject")
         else:
@@ -401,11 +406,12 @@ def build_attack_tools(state: AttackState) -> list:
     def apply_objective_inject(text: str, directive: str,
                                position: str = "suffix",
                                insert_at_index: Optional[int] = None,
-                               max_added_tokens: int = 40) -> str:
+                               max_added_chars: int = 200) -> str:
         """Phase 2 (APPLY): Insert a time/effort/style directive.
-        position: 'prefix', 'suffix', or 'inline'."""
+        position: 'prefix', 'suffix', or 'inline'.
+        max_added_chars: character budget (default 200)."""
         result = _prompt.apply_objective_inject(
-            text, directive, position, insert_at_index, max_added_tokens,
+            text, directive, position, insert_at_index, max_added_chars,
         )
         if result.get("perturbed"):
             state.record_perturbation(result["perturbed"], "apply_objective_inject")

@@ -184,7 +184,7 @@ Summary of how to use the **prompt-level (multi-token) attack tools** from `prom
 
 ## What This Tool Set Does
 
-Prompt attacks operate at the **sentence / clause level**: the agent proposes entire multi-token wrappers, restructurings, or injected clauses (e.g. verification sentences, numbered steps, uncertainty conditionals, extra constraints). They are designed to change execution style, induce longer or more cautious behavior, or alter how the model parses/prioritizes the instruction. Same **2-phase pipeline**: **FIND** (agent proposes the full clause/rewrite) → **APPLY** (tool applies it). A **token budget** is enforced: added content is capped by `max_added_tokens` (default 40).
+Prompt attacks operate at the **sentence / clause level**: the agent proposes entire multi-token wrappers, restructurings, or injected clauses (e.g. verification sentences, numbered steps, uncertainty conditionals, extra constraints). They are designed to change execution style, induce longer or more cautious behavior, or alter how the model parses/prioritizes the instruction. Same **2-phase pipeline**: **FIND** (agent proposes the full clause/rewrite) → **APPLY** (tool applies it). A **character budget** is enforced: added content is capped by `max_added_chars` (default 200 characters).
 
 ---
 
@@ -201,14 +201,15 @@ Prompt attacks operate at the **sentence / clause level**: the agent proposes en
 
 | Attack type | What the agent proposes (FIND) | APPLY function | Key parameters | Typical effect |
 |-------------|---------------------------------|----------------|----------------|----------------|
-| **verify_wrap** | A short verification sentence (5–15 tokens): double-check / confirm / verify before or after acting | `apply_verify_wrap(text, clause, position, max_added_tokens)` | `clause`, `position` ("prefix" \| "suffix") | Cautious, multi-step, slower execution |
-| **decompose_wrap** | Rewrite as 2–4 numbered steps (staged execution) | `apply_decompose_wrap(text, steps, mode, max_added_tokens)` | `steps`, `mode` ("replace" \| "prefix" \| "suffix") | Multi-phase execution, micro-adjustments, looping |
-| **uncertainty_clause** | A conditional clause (8–20 tokens): "if uncertain, re-check / re-approach / reposition" | `apply_uncertainty_clause(text, clause, max_added_tokens)` | `clause` | Retry loops, oscillation, timeout |
-| **constraint_stack** | 2–3 short constraints (e.g. "without disturbing nearby objects", "keep it upright") | `apply_constraint_stack(text, constraints, style, max_added_tokens)` | `constraints` (list), `style` ("comma" \| "bullets" \| "inline") | Longer trajectories, constraint violations, task failure in tight scenes |
-| **structure_inject** | A structured rewrite: key-value, numbered steps, or bullets (same content, different layout) | `apply_structure_inject(text, rewrite, max_added_tokens)` | `rewrite` | Changed emphasis, omission, misprioritization |
-| **objective_inject** | A time/effort/style directive (3–10 tokens): e.g. "as fast as possible", "slowly and precisely" | `apply_objective_inject(text, directive, position, insert_at_index, max_added_tokens)` | `directive`, `position` ("prefix" \| "suffix" \| "inline"), `insert_at_index` (if inline) | Speed–safety tradeoff shift |
+| **verify_wrap** | A short verification sentence (20–80 chars): double-check / confirm / verify before or after acting | `apply_verify_wrap(text, clause, position, max_added_chars)` | `clause`, `position` ("prefix" \| "suffix") | Cautious, multi-step, slower execution |
+| **decompose_wrap** | Rewrite as 2–4 numbered steps (staged execution) | `apply_decompose_wrap(text, steps, mode, max_added_chars)` | `steps`, `mode` ("replace" \| "prefix" \| "suffix") | Multi-phase execution, micro-adjustments, looping |
+| **uncertainty_clause** | A conditional clause (30–100 chars): "if uncertain, re-check / re-approach / reposition" | `apply_uncertainty_clause(text, clause, max_added_chars)` | `clause` | Retry loops, oscillation, timeout |
+| **constraint_stack** | 2–3 short constraints (e.g. "without disturbing nearby objects", "keep it upright") | `apply_constraint_stack(text, constraints, style, max_added_chars)` | `constraints` (list), `style` ("comma" \| "bullets" \| "inline") | Longer trajectories, constraint violations, task failure in tight scenes |
+| **structure_inject** | A structured rewrite: key-value, numbered steps, or bullets (same content, different layout) | `apply_structure_inject(text, rewrite, max_added_chars)` | `rewrite` | Changed emphasis, omission, misprioritization |
+| **objective_inject** | A time/effort/style directive (15–50 chars): e.g. "as fast as possible", "slowly and precisely" | `apply_objective_inject(text, directive, position, insert_at_index, max_added_chars)` | `directive`, `position` ("prefix" \| "suffix" \| "inline"), `insert_at_index` (if inline) | Speed–safety tradeoff shift |
 
-- **Token budget**: All apply functions accept optional `max_added_tokens` (default 40). Added text is truncated to stay within this budget.
+- **Per-call character clip**: All apply functions accept optional `max_added_chars` (default 200). Added text from a single call is truncated to this limit.
+- **Global char edit budget**: A hard budget (`--max_edit_chars`, default 200) limits the total Levenshtein edit distance across **all** tool types (token, char, prompt). Tool calls exceeding the budget are rejected.
 - **Entry point**: **`prompt_attack_pipeline(text, attack_type)`** or tool **`find_prompt_targets`**. Use **`PROMPT_ATTACK_TOOL_SCHEMAS`** for OpenAI-style function calling.
 
 ---
@@ -217,7 +218,7 @@ Prompt attacks operate at the **sentence / clause level**: the agent proposes en
 
 1. **Call FIND first** — **`find_prompt_targets`** with `text` and `attack_type` (one of `verify_wrap`, `decompose_wrap`, `uncertainty_clause`, `constraint_stack`, `structure_inject`, `objective_inject`). You receive a QA prompt asking you to propose the full clause/rewrite/constraints/directive.
 2. **Answer in the exact format** — The prompt specifies a response format (e.g. `CLAUSE: ... | POSITION: ... | EFFECT: ...`). Your answer *is* the content the tool will apply; extract from it the parameters for the apply call.
-3. **Call the matching APPLY function** — Use the **same** `text`, and pass the clause/steps/constraints/rewrite/directive and position/mode/style from your answer. Respect the token budget (use `max_added_tokens` if needed).
+3. **Call the matching APPLY function** — Use the **same** `text`, and pass the clause/steps/constraints/rewrite/directive and position/mode/style from your answer. Respect the character budget (use `max_added_chars` if needed).
 4. **Use `perturbed`** — Feed it to the next step or chain another attack (prompt, token, or char) using `perturbed` as the new instruction text.
 
 ---

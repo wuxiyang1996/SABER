@@ -177,7 +177,6 @@ class AttackInfo:
     # --- textual perturbation ---
     original_instruction: str = ""
     perturbed_instruction: str = ""
-    added_tokens: int = 0  # for prompt-level attacks
 
     # --- visual perturbation ---
     original_observation: Optional[np.ndarray] = None  # (H,W,C)
@@ -1125,15 +1124,15 @@ class StealthPenalty(RewardComponent):
     def __init__(
         self,
         text_edit_cap: float = 0.15,
+        char_edit_cap: int = 200,
         visual_linf_cap: float = 32.0,
         visual_pixel_cap: float = 0.05,
-        prompt_token_cap: int = 15,
         text_emphasis: float = 2.0,
     ):
         self.text_edit_cap = text_edit_cap
+        self.char_edit_cap = char_edit_cap
         self.visual_linf_cap = visual_linf_cap
         self.visual_pixel_cap = visual_pixel_cap
-        self.prompt_token_cap = prompt_token_cap
         self.text_emphasis = text_emphasis
 
     def compute(
@@ -1159,21 +1158,10 @@ class StealthPenalty(RewardComponent):
             ced = edit_distance(
                 attack_info.original_instruction, attack_info.perturbed_instruction,
             )
-            char_penalty = min(
-                ced / max(len(attack_info.original_instruction), 1), 1.0,
-            )
+            char_penalty = min(ced / self.char_edit_cap, 1.0)
             metrics["stealth_char_edit_dist"] = ced
             metrics["stealth_char_penalty"] = char_penalty
             text_scores.append(char_penalty)
-
-        # --- prompt added tokens ---
-        if attack_info.added_tokens > 0:
-            prompt_penalty = min(
-                attack_info.added_tokens / self.prompt_token_cap, 1.0,
-            )
-            text_scores.append(prompt_penalty)
-            metrics["stealth_added_tokens"] = attack_info.added_tokens
-            metrics["stealth_prompt_penalty"] = prompt_penalty
 
         # --- visual perturbation magnitude ---
         if (
@@ -2093,7 +2081,6 @@ def build_attack_info_from_state(
     original_instruction: str,
     original_observation: Optional[np.ndarray] = None,
     perturbed_observation: Optional[np.ndarray] = None,
-    added_tokens: int = 0,
 ) -> AttackInfo:
     """Construct ``AttackInfo`` from an attack state object.
 
@@ -2110,11 +2097,7 @@ def build_attack_info_from_state(
         Clean visual observation before perturbation.
     perturbed_observation : np.ndarray, optional
         Perturbed visual observation after attack.
-    added_tokens : int
-        Number of tokens added by prompt-level attacks.
     """
-    # Support both AttackState (.perturbed_question) and
-    # VLAAttackState (.perturbed_instruction)
     perturbed = getattr(
         attack_state, "perturbed_instruction",
         getattr(attack_state, "perturbed_question", original_instruction),
@@ -2125,7 +2108,6 @@ def build_attack_info_from_state(
         tools_used=list(attack_state.tools_used),
         original_instruction=original_instruction,
         perturbed_instruction=perturbed,
-        added_tokens=added_tokens,
         original_observation=original_observation,
         perturbed_observation=perturbed_observation,
     )

@@ -160,6 +160,7 @@ async def evaluate(args: argparse.Namespace) -> None:
         task_ids=task_ids,
         episodes_per_task=args.episodes_per_task,
         stealth_weight=args.stealth_weight,
+        max_edit_chars=args.max_edit_chars,
         max_turns=args.max_turns,
         replan_steps=args.replan_steps,
         seed=args.seed,
@@ -295,7 +296,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    parser.add_argument("--objective", type=str, default="task_failure",
+    parser.add_argument("--objective", type=str, default="action_inflation",
                         choices=[o.value for o in AttackObjective])
     parser.add_argument("--tool_sets", type=str, default="token,char,prompt")
     parser.add_argument("--task_suite", type=str, default="libero_10",
@@ -312,6 +313,8 @@ def main():
     parser.add_argument("--max_turns", type=int, default=8)
     parser.add_argument("--replan_steps", type=int, default=10)
     parser.add_argument("--stealth_weight", type=float, default=0.3)
+    parser.add_argument("--max_edit_chars", type=int, default=200,
+                        help="Hard budget: max Levenshtein char edits allowed.")
     parser.add_argument("--seed", type=int, default=7)
 
     parser.add_argument("--vla_config_name", type=str, default="pi05_libero")

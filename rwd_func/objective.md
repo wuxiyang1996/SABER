@@ -106,11 +106,14 @@ adversarial effect with the smallest edit possible.
 | Group  | Sub-penalty             | Saturation cap | Description                                   |
 |--------|-------------------------|----------------|-----------------------------------------------|
 | Text   | Token edit ratio        | 0.15           | Fraction of tokens changed (word-level)       |
-| Text   | Char edit distance      | len(original)  | Character-level Levenshtein distance, normed  |
-| Text   | Added tokens            | 15             | New tokens appended/prepended to instruction  |
+| Text   | Char edit distance      | 200 (default)  | Levenshtein distance (add/remove/change chars) |
 | Visual | L∞ norm                 | 32.0           | Max per-pixel absolute difference             |
 | Visual | Pixel change ratio      | 0.05           | Fraction of pixels that differ at all         |
 | Visual | SSIM degradation        | 1.0            | 1 − SSIM (structural similarity)              |
+
+**Hard budget**: All tool types (token, char, prompt) share a single char-edit
+budget (`--max_edit_chars`, default **200**).  If a tool call would push the
+Levenshtein edit distance beyond this limit, it is rejected.
 
 ### Aggregation (text-emphasised)
 
@@ -131,9 +134,12 @@ single group's mean is returned directly.
 
 With `λ = 0.3` (default), a fully-saturated stealth penalty costs
 `0.3 × 1.0 = 0.3` reward.  Even a moderate text edit (token-edit ratio
-≥ 0.15 or ≥ 15 added tokens) saturates the text sub-penalties, imposing
-the maximum text-group penalty.  This strongly incentivises the attack
-agent to find adversarial effects achievable with **minimal prompt changes**.
+≥ 0.15 or char edit distance ≥ 200) saturates the text sub-penalties,
+imposing the maximum text-group penalty.  The hard char-edit budget
+(default 200) prevents the agent from even attempting edits beyond this
+limit — tool calls are rejected before they take effect.  This strongly
+incentivises the attack agent to find adversarial effects achievable with
+**minimal prompt changes**.
 
 ## Agent System Prompt
 
@@ -719,16 +725,18 @@ Example for a combined text + visual attack:
 
 ```python
 # Text: original "Pick up the red mug" → perturbed "Piick up teh rred muug"
-token_edit_ratio = 3/5 = 0.6  →  text_penalty = min(0.6 / 0.3, 1.0) = 1.0
-char_edit_dist   = 4           →  char_penalty = min(4 / 20, 1.0) = 0.2
+token_edit_ratio = 3/5 = 0.6  →  text_penalty = min(0.6 / 0.15, 1.0) = 1.0
+char_edit_dist   = 4           →  char_penalty = min(4 / 200, 1.0) = 0.02
 
 # Visual: 50 pixels changed, L∞ = 24
 linf_penalty  = min(24 / 32, 1.0) = 0.75
 pixel_penalty = min(0.001 / 0.05, 1.0) = 0.02
 ssim_deg      = 0.03
 
-# Average of all 5 sub-signals:
-stealth_penalty = (1.0 + 0.2 + 0.75 + 0.02 + 0.03) / 5 = 0.40
+# Text-emphasised aggregation (text_emphasis = 2.0):
+text_mean   = (1.0 + 0.02) / 2 = 0.51
+visual_mean = (0.75 + 0.02 + 0.03) / 3 = 0.267
+stealth_penalty = (2.0 × 0.51 + 1.0 × 0.267) / (2.0 + 1.0) = 0.429
 ```
 
 ---

@@ -230,7 +230,7 @@ The agent LLM proposes *entire clauses, sentences, or restructurings* (not singl
 | Granularity | 1–2 tokens | 5–40 tokens (clauses / sentences) |
 | Agent proposes | target token + replacement | entire clause / rewrite / constraint set |
 | Edit type | Replace / remove / insert word | Wrap / restructure / inject clause |
-| Budget | Implicit (1–2 tokens) | Explicit: `max_added_tokens` (default 40) |
+| Budget | Global: `max_edit_chars` (default 200 char edits) | Per-call clip: `max_added_chars` (default 200 chars) + global `max_edit_chars` |
 
 #### Attack Type Summary
 
@@ -268,7 +268,7 @@ The agent LLM proposes *entire clauses, sentences, or restructurings* (not singl
 5. Agent calls the chosen apply tool: apply_verify_wrap(text, "Confirm the target before grasping.", "suffix")
 6. Tool returns {original, perturbed, ...} — agent uses perturbed text downstream
 7. (Optional) Agent chains: e.g. verify_wrap + constraint_stack for compound effect
-8. Token budget enforced: added tokens ≤ max_added_tokens (default 40)
+8. Per-call clip: added chars ≤ max_added_chars (200). Global budget: total char edits ≤ max_edit_chars (200)
 ```
 
 #### Composability (Multi-Attack Chaining)

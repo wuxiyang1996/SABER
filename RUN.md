@@ -41,11 +41,12 @@ To improve attack success, allow the agent to use **multiple tools** (and more r
 
 Examples of **attack budgets** (perturbation size limits):
 
-- **Prompt tools**: `max_added_tokens` (default 40) — caps how many tokens can be added in one prompt-level edit. Enforced inside the prompt_attack tools.
+- **Global char edit budget**: `--max_edit_chars` (default 200) — hard limit on total Levenshtein char edits (add/remove/change) across all tool types. Tool calls exceeding the budget are rejected.
+- **Per-call clip (prompt tools)**: `max_added_chars` (default 200) — caps how many characters can be added in one prompt-level edit. Enforced inside the prompt_attack tools.
 - **Visual tools**: `linf_budget` (e.g. 8) — max per-pixel change (L∞) for image perturbations. Passed when the agent calls the apply function.
 - **Reward**: The objective reward includes a **stealth penalty** (`--stealth_weight`); large edits reduce reward, so the agent is encouraged to stay within small effective “budgets” even when tools allow more.
 
-So: **max_turns** = “how many tool-call rounds”; **attack budget** = “how big each edit can be” (per tool / per call).
+So: **max_turns** = “how many tool-call rounds”; **max_edit_chars** = “total char edits allowed across all tools”.
 
 ---
 

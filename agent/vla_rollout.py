@@ -180,6 +180,7 @@ class VLAAttackScenario:
     max_turns: int = MAX_TURNS                  # ReAct tool-call rounds (more = room for multi-tool)
     replan_steps: int = REPLAN_STEPS            # VLA actions per inference chunk (higher = fewer model calls)
     stealth_weight: float = 0.3                 # λ for P_stealth
+    max_edit_chars: int = 200                   # hard budget: max Levenshtein char edits
 
 
 # ============================================================================
@@ -217,6 +218,7 @@ def build_scenarios(
     task_ids: List[int],
     episodes_per_task: int,
     stealth_weight: float,
+    max_edit_chars: int = 200,
     max_steps: Optional[int] = None,
     max_turns: int = 5,
     replan_steps: int = 10,
@@ -238,6 +240,7 @@ def build_scenarios(
                     objective=objective,
                     tool_sets=list(tool_sets),
                     stealth_weight=stealth_weight,
+                    max_edit_chars=max_edit_chars,
                     max_steps=max_steps,
                     max_turns=max_turns,
                     replan_steps=replan_steps,
@@ -253,13 +256,21 @@ def build_scenarios(
 class VLAAttackState:
     """Mutable state shared by all tool closures during a single episode.
 
-    Tracks both textual and visual perturbations.
+    Tracks both textual and visual perturbations.  Enforces a hard
+    character-edit budget: if a tool call would push the Levenshtein
+    edit distance beyond ``max_edit_chars``, the change is rejected.
     """
 
-    def __init__(self, instruction: str, observation: Optional[np.ndarray] = None):
+    def __init__(
+        self,
+        instruction: str,
+        observation: Optional[np.ndarray] = None,
+        max_edit_chars: int = 200,
+    ):
         # Text
         self.original_instruction = instruction
         self.perturbed_instruction = instruction
+        self.max_edit_chars = max_edit_chars
 
         # Visual
         self.original_observation = observation
@@ -270,14 +281,30 @@ class VLAAttackState:
         # Bookkeeping
         self.attack_applied = False
         self.tools_used: List[str] = []
-        self.added_tokens: int = 0
+
+    @property
+    def edited_chars(self) -> int:
+        """Current char edit distance between original and perturbed."""
+        from rwd_func.rwd import edit_distance
+        return edit_distance(self.original_instruction, self.perturbed_instruction)
+
+    @property
+    def budget_remaining(self) -> int:
+        return max(0, self.max_edit_chars - self.edited_chars)
 
     # -- mutation helpers --------------------------------------------------
 
-    def record_text_perturbation(self, perturbed: str, tool_name: str) -> None:
+    def record_text_perturbation(self, perturbed: str, tool_name: str) -> bool:
+        """Try to apply a text perturbation.  Returns True if accepted,
+        False if it would exceed the character-edit budget."""
+        from rwd_func.rwd import edit_distance
+        new_dist = edit_distance(self.original_instruction, perturbed)
+        if new_dist > self.max_edit_chars:
+            return False
         self.perturbed_instruction = perturbed
         self.attack_applied = True
         self.tools_used.append(tool_name)
+        return True
 
     def record_visual_perturbation(
         self, perturbed: np.ndarray, tool_name: str,
@@ -343,7 +370,8 @@ def build_vla_attack_tools(
             """APPLY: Replace a token identified in the FIND phase."""
             result = _tok.apply_replace(text, target_token, replacement, target_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_replace")
+                if not state.record_text_perturbation(result["perturbed"], "apply_replace"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_replace")
             return _truncate_result(result)
@@ -355,7 +383,8 @@ def build_vla_attack_tools(
             """APPLY: Remove a token identified in the FIND phase."""
             result = _tok.apply_remove(text, target_token, target_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_remove")
+                if not state.record_text_perturbation(result["perturbed"], "apply_remove"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_remove")
             return _truncate_result(result)
@@ -369,7 +398,8 @@ def build_vla_attack_tools(
             position: 'prefix', 'suffix', or 'at_index'."""
             result = _tok.apply_add(text, modifier, position, insert_before_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_add")
+                if not state.record_text_perturbation(result["perturbed"], "apply_add"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_add")
             return _truncate_result(result)
@@ -382,7 +412,8 @@ def build_vla_attack_tools(
             """APPLY: Swap an attribute identified in the FIND phase."""
             result = _tok.apply_swap(text, target_token, replacement, target_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_swap")
+                if not state.record_text_perturbation(result["perturbed"], "apply_swap"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_swap")
             return _truncate_result(result)
@@ -412,7 +443,8 @@ def build_vla_attack_tools(
             """APPLY: Insert a character into a word (0-based pos)."""
             result = _char.apply_add_char(text, target_word, char, char_pos, word_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_add_char")
+                if not state.record_text_perturbation(result["perturbed"], "apply_add_char"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_add_char")
             return _truncate_result(result)
@@ -425,7 +457,8 @@ def build_vla_attack_tools(
             """APPLY: Delete a character from a word (0-based pos)."""
             result = _char.apply_remove_char(text, target_word, char_pos, word_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_remove_char")
+                if not state.record_text_perturbation(result["perturbed"], "apply_remove_char"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_remove_char")
             return _truncate_result(result)
@@ -440,7 +473,8 @@ def build_vla_attack_tools(
                 text, target_word, char_pos, new_char, word_index,
             )
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_alter_char")
+                if not state.record_text_perturbation(result["perturbed"], "apply_alter_char"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_alter_char")
             return _truncate_result(result)
@@ -453,7 +487,8 @@ def build_vla_attack_tools(
             """APPLY: Swap two adjacent characters (pos and pos+1)."""
             result = _char.apply_swap_chars(text, target_word, char_pos, word_index)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_swap_chars")
+                if not state.record_text_perturbation(result["perturbed"], "apply_swap_chars"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_swap_chars")
             return _truncate_result(result)
@@ -468,7 +503,8 @@ def build_vla_attack_tools(
                 text, target_word, char_positions, word_index,
             )
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_flip_case")
+                if not state.record_text_perturbation(result["perturbed"], "apply_flip_case"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_flip_case")
             return _truncate_result(result)
@@ -495,13 +531,14 @@ def build_vla_attack_tools(
         @tool
         def apply_verify_wrap(
             text: str, clause: str, position: str = "suffix",
-            max_added_tokens: int = 15,
+            max_added_chars: int = 80,
         ) -> str:
-            """APPLY: Attach a verification clause (prefix or suffix)."""
-            result = _prompt.apply_verify_wrap(text, clause, position, max_added_tokens)
+            """APPLY: Attach a verification clause (prefix or suffix).
+            max_added_chars: character budget for the clause (default 80)."""
+            result = _prompt.apply_verify_wrap(text, clause, position, max_added_chars)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_verify_wrap")
-                state.added_tokens += result.get("added_tokens", 0)
+                if not state.record_text_perturbation(result["perturbed"], "apply_verify_wrap"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_verify_wrap")
             return _truncate_result(result)
@@ -509,27 +546,29 @@ def build_vla_attack_tools(
         @tool
         def apply_decompose_wrap(
             text: str, steps: str, mode: str = "replace",
-            max_added_tokens: int = 15,
+            max_added_chars: int = 80,
         ) -> str:
             """APPLY: Rewrite as numbered steps for staged execution.
-            mode: 'replace', 'prefix', or 'suffix'."""
-            result = _prompt.apply_decompose_wrap(text, steps, mode, max_added_tokens)
+            mode: 'replace', 'prefix', or 'suffix'.
+            max_added_chars: character budget (default 80)."""
+            result = _prompt.apply_decompose_wrap(text, steps, mode, max_added_chars)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_decompose_wrap")
-                state.added_tokens += result.get("added_tokens", 0)
+                if not state.record_text_perturbation(result["perturbed"], "apply_decompose_wrap"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_decompose_wrap")
             return _truncate_result(result)
 
         @tool
         def apply_uncertainty_clause(
-            text: str, clause: str, max_added_tokens: int = 15,
+            text: str, clause: str, max_added_chars: int = 80,
         ) -> str:
-            """APPLY: Append an 'if uncertain' conditional clause."""
-            result = _prompt.apply_uncertainty_clause(text, clause, max_added_tokens)
+            """APPLY: Append an 'if uncertain' conditional clause.
+            max_added_chars: character budget (default 80)."""
+            result = _prompt.apply_uncertainty_clause(text, clause, max_added_chars)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_uncertainty_clause")
-                state.added_tokens += result.get("added_tokens", 0)
+                if not state.record_text_perturbation(result["perturbed"], "apply_uncertainty_clause"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_uncertainty_clause")
             return _truncate_result(result)
@@ -537,29 +576,31 @@ def build_vla_attack_tools(
         @tool
         def apply_constraint_stack(
             text: str, constraints: list[str], style: str = "comma",
-            max_added_tokens: int = 15,
+            max_added_chars: int = 80,
         ) -> str:
             """APPLY: Append 2-3 extra constraints.
-            style: 'comma', 'bullets', or 'inline'."""
+            style: 'comma', 'bullets', or 'inline'.
+            max_added_chars: character budget (default 80)."""
             result = _prompt.apply_constraint_stack(
-                text, constraints, style, max_added_tokens,
+                text, constraints, style, max_added_chars,
             )
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_constraint_stack")
-                state.added_tokens += result.get("added_tokens", 0)
+                if not state.record_text_perturbation(result["perturbed"], "apply_constraint_stack"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_constraint_stack")
             return _truncate_result(result)
 
         @tool
         def apply_structure_inject(
-            text: str, rewrite: str, max_added_tokens: int = 15,
+            text: str, rewrite: str, max_added_chars: int = 80,
         ) -> str:
-            """APPLY: Replace with a structured rewrite (key-value / bullets)."""
-            result = _prompt.apply_structure_inject(text, rewrite, max_added_tokens)
+            """APPLY: Replace with a structured rewrite (key-value / bullets).
+            max_added_chars: character budget (default 80)."""
+            result = _prompt.apply_structure_inject(text, rewrite, max_added_chars)
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_structure_inject")
-                state.added_tokens += result.get("added_tokens", 0)
+                if not state.record_text_perturbation(result["perturbed"], "apply_structure_inject"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_structure_inject")
             return _truncate_result(result)
@@ -568,16 +609,17 @@ def build_vla_attack_tools(
         def apply_objective_inject(
             text: str, directive: str, position: str = "suffix",
             insert_at_index: Optional[int] = None,
-            max_added_tokens: int = 15,
+            max_added_chars: int = 80,
         ) -> str:
             """APPLY: Insert a time/effort/style directive.
-            position: 'prefix', 'suffix', or 'inline'."""
+            position: 'prefix', 'suffix', or 'inline'.
+            max_added_chars: character budget (default 80)."""
             result = _prompt.apply_objective_inject(
-                text, directive, position, insert_at_index, max_added_tokens,
+                text, directive, position, insert_at_index, max_added_chars,
             )
             if result.get("perturbed"):
-                state.record_text_perturbation(result["perturbed"], "apply_objective_inject")
-                state.added_tokens += result.get("added_tokens", 0)
+                if not state.record_text_perturbation(result["perturbed"], "apply_objective_inject"):
+                    return _truncate_result({"error": f"Edit budget exceeded ({state.max_edit_chars} chars). {state.budget_remaining} chars remaining."})
             else:
                 state.record_call("apply_objective_inject")
             return _truncate_result(result)
@@ -1397,7 +1439,10 @@ async def vla_attack_rollout(
     # ----------------------------------------------------------------
     # Step 2: ATTACK AGENT perturbs instruction / observation
     # ----------------------------------------------------------------
-    state = VLAAttackState(instruction, observation=clean_observation)
+    state = VLAAttackState(
+        instruction, observation=clean_observation,
+        max_edit_chars=scenario.max_edit_chars,
+    )
 
     attack_tools = build_vla_attack_tools(state, scenario.tool_sets)
 
@@ -1468,7 +1513,10 @@ async def vla_attack_rollout(
                     _attempt + 1, _MAX_AGENT_RETRIES, wait, e,
                 )
                 await asyncio.sleep(wait)
-                state = VLAAttackState(instruction, observation=clean_observation)
+                state = VLAAttackState(
+                    instruction, observation=clean_observation,
+                    max_edit_chars=scenario.max_edit_chars,
+                )
                 attack_tools = build_vla_attack_tools(state, scenario.tool_sets)
                 chat_model = init_chat_model()
                 react_agent = create_react_agent(chat_model, attack_tools)
@@ -1523,7 +1571,6 @@ async def vla_attack_rollout(
         original_instruction=instruction,
         original_observation=clean_observation,
         perturbed_observation=obs_override,
-        added_tokens=state.added_tokens,
     )
 
     reward_fn = make_objective_reward(

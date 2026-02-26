@@ -208,7 +208,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 # ============================================================================
 
-DEFAULT_OBJECTIVE = "task_failure"
+DEFAULT_OBJECTIVE = "action_inflation"
 DEFAULT_TOOL_SETS = "token,char,prompt"
 DEFAULT_TASK_SUITE = "libero_90"
 DEFAULT_TASK_IDS = "all"
@@ -219,6 +219,7 @@ DEFAULT_NUM_EPOCHS = 3
 DEFAULT_LEARNING_RATE = 1e-5
 DEFAULT_EVAL_STEPS = 5
 DEFAULT_STEALTH_WEIGHT = 0.3
+DEFAULT_MAX_EDIT_CHARS = 200  # hard budget: max Levenshtein char edits
 DEFAULT_MAX_STEPS = None  # use suite default
 
 
@@ -267,6 +268,7 @@ async def train(args: argparse.Namespace) -> None:
     logger.info("  Replan steps:     %d (VLA inference every N env steps)", args.replan_steps)
     logger.info("  Rollout workers:  %d threads", args.rollout_workers)
     logger.info("  Stealth weight:   %s", args.stealth_weight)
+    logger.info("  Max edit chars:   %d (hard budget)", args.max_edit_chars)
     logger.info("=" * 60)
 
     # --- Create timestamped run directory --------------------------------
@@ -313,6 +315,7 @@ async def train(args: argparse.Namespace) -> None:
             "num_epochs": args.num_epochs,
             "learning_rate": args.learning_rate,
             "stealth_weight": args.stealth_weight,
+            "max_edit_chars": args.max_edit_chars,
             "max_turns": args.max_turns,
             "replan_steps": args.replan_steps,
             "max_steps": args.max_steps,
@@ -441,6 +444,7 @@ async def train(args: argparse.Namespace) -> None:
         task_ids=task_ids,
         episodes_per_task=args.episodes_per_task,
         stealth_weight=args.stealth_weight,
+        max_edit_chars=args.max_edit_chars,
         max_steps=args.max_steps,
         max_turns=args.max_turns,
         replan_steps=args.replan_steps,
@@ -642,6 +646,7 @@ async def train(args: argparse.Namespace) -> None:
             task_ids=eval_task_ids,
             episodes_per_task=args.eval_episodes_per_task,
             stealth_weight=args.stealth_weight,
+            max_edit_chars=args.max_edit_chars,
             max_steps=args.max_steps,
             max_turns=args.max_turns,
             replan_steps=args.replan_steps,
@@ -776,6 +781,10 @@ def main():
     parser.add_argument(
         "--stealth_weight", type=float, default=DEFAULT_STEALTH_WEIGHT,
         help="λ for the stealth penalty in the reward.",
+    )
+    parser.add_argument(
+        "--max_edit_chars", type=int, default=DEFAULT_MAX_EDIT_CHARS,
+        help="Hard budget: max Levenshtein character edits (add/remove/change) allowed. Applies to all tool types.",
     )
     parser.add_argument(
         "--replan_steps", type=int, default=10,

@@ -59,7 +59,7 @@ All attack tools follow a **two-phase, agent-driven** design: **FIND** (analyse 
 | **Char** | FIND: `find_char_targets(text, attack_type)` | Target word and character-level edit type | Returns word list with char positions + QA prompt |
 | | APPLY: `apply_add_char`, `apply_remove_char`, `apply_alter_char`, `apply_swap_chars`, `apply_flip_case` | Word, character position(s), new char(s) | Typo-style edits within a word (subword/OCR-style) |
 | **Prompt** | FIND: `find_prompt_targets(text, attack_type)` | Attack type (verify_wrap, decompose_wrap, uncertainty_clause, etc.) | Returns QA prompt for multi-token clauses |
-| | APPLY: `apply_verify_wrap`, `apply_decompose_wrap`, `apply_uncertainty_clause`, `apply_constraint_stack`, `apply_structure_inject`, `apply_objective_inject` | Full clause, steps, constraints, or directive | Injects sentences/clauses (budget: `max_added_tokens`, default 40) |
+| | APPLY: `apply_verify_wrap`, `apply_decompose_wrap`, `apply_uncertainty_clause`, `apply_constraint_stack`, `apply_structure_inject`, `apply_objective_inject` | Full clause, steps, constraints, or directive | Injects sentences/clauses (per-call clip: `max_added_chars`, default 200 chars) |
 | **Visual** | FIND: `find_visual_targets(attack_type)` | Attack type (patch_roi, sparse_pixel, color_shift, etc.) | Returns image metadata + QA prompt |
 | | APPLY: `apply_patch_roi`, `apply_sparse_pixel`, `apply_color_shift`, `apply_sensor_corrupt`, etc. | Location, size, pattern, intensity, L∞ budget | Pixel-level or ROI perturbations on the camera observation |
 
@@ -338,8 +338,9 @@ or `all` to use every task in the suite.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--objective` | task_failure | Attack objective (see **Reward design** above) |
+| `--objective` | action_inflation | Attack objective (see **Reward design** above) |
 | `--tool_sets` | token,char,prompt | Comma-separated: token, char, prompt, visual |
+| `--max_edit_chars` | 200 | Hard budget: max Levenshtein char edits (add/remove/change) across all tools |
 | `--task_suite` | libero_90 | LIBERO training suite: libero_spatial, libero_object, libero_goal, libero_10, libero_90 |
 | `--task_ids` | all | Task indices: `all`, ranges (`0-89`), or comma-separated (`0,3,5-7`) |
 | `--eval_task_suite` | libero_10 | LIBERO suite for post-training evaluation |

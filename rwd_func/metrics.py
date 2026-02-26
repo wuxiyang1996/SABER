@@ -92,8 +92,8 @@ class AttackMetrics:
 
     # --- 7. Stealth / perturbation magnitude ---
     avg_token_edit_ratio: float = 0.0
+    avg_char_edit_dist: float = 0.0
     avg_stealth_penalty: float = 0.0
-    avg_added_tokens: float = 0.0
     avg_visual_linf: float = 0.0
     avg_visual_pixel_change: float = 0.0
     avg_visual_ssim: float = 0.0
@@ -140,8 +140,8 @@ class AttackMetrics:
             "num_baseline_success": self.num_baseline_success,
             "num_flipped": self.num_flipped,
             "avg_token_edit_ratio": self.avg_token_edit_ratio,
+            "avg_char_edit_dist": self.avg_char_edit_dist,
             "avg_stealth_penalty": self.avg_stealth_penalty,
-            "avg_added_tokens": self.avg_added_tokens,
             "avg_visual_linf": self.avg_visual_linf,
             "avg_visual_pixel_change": self.avg_visual_pixel_change,
             "avg_visual_ssim": self.avg_visual_ssim,
@@ -237,7 +237,7 @@ def compute_metrics_from_trajectories(
     baseline_successes: List[int] = []
     flips: List[int] = []
     stealth_penalties: List[float] = []
-    added_tokens_list: List[float] = []
+    char_edit_dists: List[float] = []
     visual_linf_list: List[float] = []
     visual_pixel_list: List[float] = []
     visual_ssim_list: List[float] = []
@@ -316,7 +316,7 @@ def compute_metrics_from_trajectories(
 
         # --- 7. Stealth metrics (from reward computation) ---
         stealth_penalties.append(float(m.get("stealth_penalty", 0.0)))
-        added_tokens_list.append(float(m.get("stealth_added_tokens", 0.0)))
+        char_edit_dists.append(float(m.get("stealth_char_edit_dist", 0.0)))
         if "stealth_linf" in m:
             visual_linf_list.append(float(m["stealth_linf"]))
         if "stealth_pixel_change_ratio" in m:
@@ -402,8 +402,8 @@ def compute_metrics_from_trajectories(
         num_flipped=sum(flips),
         # 7
         avg_token_edit_ratio=_safe_mean(token_edit_ratios),
+        avg_char_edit_dist=_safe_mean(char_edit_dists),
         avg_stealth_penalty=_safe_mean(stealth_penalties),
-        avg_added_tokens=_safe_mean(added_tokens_list),
         avg_visual_linf=_safe_mean(visual_linf_list),
         avg_visual_pixel_change=_safe_mean(visual_pixel_list),
         avg_visual_ssim=_safe_mean(visual_ssim_list),
@@ -493,8 +493,8 @@ def print_metrics(
         f"  {sep}",
         # Perturbation
         f"  Avg token edit ratio:        {m.avg_token_edit_ratio:.3f}",
+        f"  Avg char edit distance:      {m.avg_char_edit_dist:.1f}",
         f"  Avg stealth penalty:         {m.avg_stealth_penalty:.3f}",
-        f"  Avg added tokens:            {m.avg_added_tokens:.1f}",
     ]
 
     if m.avg_visual_linf > 0:
