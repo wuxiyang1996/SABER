@@ -2,12 +2,14 @@
 """
 Apply ART 0.5.x ↔ vLLM 0.11.x compatibility patches.
 
-Three patches:
+Four patches:
   1. Add pause_generation / resume_generation stubs to AsyncLLM
      (ART calls them; vLLM < 0.16 does not have them).
   2. Replace run_on_workers(do_sleep/do_wake_up) with native
      llm.sleep() / llm.wake_up() in ART's UnslothService.train()
      (avoids EngineDeadError from bypassing EngineCore coordination).
+  2b. Before wake_up(): sync GPU, gc, empty_cache(5), sleep(2); catch
+      EngineDeadError and re-raise as RuntimeError (reduces OOM during training).
   3. Fix tool_parsers import path in ART's patches.py
      (vLLM 0.11 has it under vllm.entrypoints.openai.tool_parsers,
       not vllm.tool_parsers).
@@ -74,8 +76,50 @@ def patch_async_llm(sp: str, *, dry_run: bool = False) -> bool:
     return True
 
 
+# Block inserted before llm.wake_up() to reduce OOM: release GPU memory and catch EngineDeadError.
+# Uses 4-space base indent so we can re-indent to match ART's service.py.
+_WAKE_UP_OOM_FIX_BLOCK = """    import torch
+    import gc
+    torch.cuda.synchronize()
+    gc.collect()
+    for _ in range(5):
+        torch.cuda.empty_cache()
+    await asyncio.sleep(2.0)
+    try:
+        await llm.wake_up()
+    except Exception as wake_err:
+        from vllm.v1.engine.exceptions import EngineDeadError
+        if isinstance(wake_err, EngineDeadError):
+            raise RuntimeError(
+                "vLLM EngineCore died during training (often OOM or worker crash). "
+                "Restart with: python train_vla.py --resume . To reduce risk set "
+                "ART_PER_DEVICE_TRAIN_BATCH_SIZE=1 (uses less GPU memory during training), "
+                "ensure sufficient RAM for weight offload, or check dmesg for OOM killer."
+            ) from wake_err
+        raise
+"""
+
+
+def _reindent_block(block: str, indent: str) -> str:
+    """Reindent block (4-space base) to use given indent; preserve nested 4-space level."""
+    lines = block.strip().split("\n")
+    out = []
+    for line in lines:
+        if not line.strip():
+            out.append("")
+            continue
+        if line.startswith("        "):  # 8 spaces -> nested
+            out.append(indent + "    " + line[8:])
+        elif line.startswith("    "):  # 4 spaces -> top level
+            out.append(indent + line[4:])
+        else:
+            out.append(indent + line)
+    return "\n".join(out)
+
+
 def patch_unsloth_service(sp: str, *, dry_run: bool = False) -> bool:
-    """Patch 2: replace run_on_workers sleep/wake with native llm.sleep/wake_up."""
+    """Patch 2: replace run_on_workers sleep/wake with native llm.sleep/wake_up.
+    Patch 2b: before wake_up(), sync + gc + empty_cache + sleep; catch EngineDeadError."""
     path = os.path.join(sp, "art", "unsloth", "service.py")
     if not os.path.isfile(path):
         print(f"[SKIP] {path} not found (ART not installed?)")
@@ -86,27 +130,53 @@ def patch_unsloth_service(sp: str, *, dry_run: bool = False) -> bool:
 
     old_sleep = "await run_on_workers(llm, do_sleep, level=sleep_level)"
     old_wake = "await run_on_workers(llm, do_wake_up)"
-
     needs_sleep = old_sleep in src
     needs_wake = old_wake in src
 
-    if not needs_sleep and not needs_wake:
-        print("[OK]   Patch 2: sleep/wake already uses native vLLM pipeline")
+    # Already patched with OOM fix (our block contains this message)
+    has_oom_fix = "vLLM EngineCore died during training" in src
+
+    if not needs_sleep and not needs_wake and has_oom_fix:
+        print("[OK]   Patch 2: sleep/wake + OOM fix already applied")
         return False
 
+    if not needs_sleep and not needs_wake and not has_oom_fix:
+        # Native sleep/wake already there; add OOM fix only (replace bare "await llm.wake_up()")
+        match = re.search(r"^(\s+)await llm\.wake_up\(\)\s*$", src, re.MULTILINE)
+        if not match:
+            print("[OK]   Patch 2: sleep/wake already native (wake_up pattern not found for OOM fix)")
+            return False
+        if dry_run:
+            print("[NEED] Patch 2b: add sync/gc/sleep before wake_up and catch EngineDeadError")
+            return True
+        indent = match.group(1)
+        block = _reindent_block(_WAKE_UP_OOM_FIX_BLOCK, indent)
+        patched = src.replace(match.group(0), block, 1)
+        with open(path, "w") as f:
+            f.write(patched)
+        print(f"[DONE] Patch 2b: added OOM fix (sync/gc/sleep + EngineDeadError handling) in {path}")
+        return True
+
     if dry_run:
-        print("[NEED] Patch 2: run_on_workers(do_sleep/do_wake_up) needs replacing")
+        print("[NEED] Patch 2: run_on_workers(do_sleep/do_wake_up) needs replacing (+ OOM fix)")
         return True
 
     patched = src
     if needs_sleep:
         patched = patched.replace(old_sleep, "await llm.sleep(sleep_level)")
     if needs_wake:
-        patched = patched.replace(old_wake, "await llm.wake_up()")
+        # Replace with OOM-fix block (same indentation as original await llm.wake_up())
+        match = re.search(r"^(\s+)await run_on_workers\(llm, do_wake_up\)\s*$", patched, re.MULTILINE)
+        if match:
+            indent = match.group(1)
+            block = _reindent_block(_WAKE_UP_OOM_FIX_BLOCK, indent)
+            patched = patched.replace(match.group(0), block, 1)
+        else:
+            patched = patched.replace(old_wake, "await llm.wake_up()")
 
     with open(path, "w") as f:
         f.write(patched)
-    print(f"[DONE] Patch 2: replaced sleep/wake with native vLLM pipeline in {path}")
+    print(f"[DONE] Patch 2: replaced sleep/wake with native vLLM pipeline + OOM fix in {path}")
     return True
 
 

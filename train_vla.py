@@ -8,7 +8,7 @@ Train/test split (7/3 per suite, 4 eval suites):
   - **Train**: tasks 0-6 from each suite = 28 tasks × 1 init state = 28 scenarios
   - **Test** : tasks 7-9 from each suite = 12 tasks × 10 init states = 120 episodes
 
-Speedup defaults: replan_steps=20, episodes_per_task=1, num_epochs=1.
+Speedup defaults: replan_steps=5, episodes_per_task=1, num_epochs=1.
 
 Usage
 -----
@@ -450,8 +450,8 @@ async def train(args: argparse.Namespace) -> None:
             vla_model = Pi05LiberoModel(
                 train_config_name=args.vla_config_name,
                 checkpoint_path=args.vla_checkpoint,
-                action_horizon=10,  # matches pi05_libero config
-                replan_steps=5,
+                action_horizon=10,
+                replan_steps=args.replan_steps,
             )
         models_and_devices.append((vla_model, vla_jax_device))
 
@@ -907,8 +907,8 @@ def main():
         "--replan_steps", type=int, default=DEFAULT_REPLAN_STEPS,
         help=(
             "Actions to execute from each VLA prediction chunk before re-planning. "
-            "Higher = fewer VLA model calls (faster). Default 20: halves VLA calls "
-            "vs 10, fine for LIBERO tabletop tasks. Range 5–50."
+            "Higher = fewer VLA model calls (faster). Default 5: matches official "
+            "OpenPI LIBERO config. Range 5–50."
         ),
     )
 
@@ -1052,7 +1052,6 @@ def main():
             "Default 24 = 8 per GPU with 3 VLA GPUs (A100-80GB)."
         ),
     )
-
     args = parser.parse_args()
 
     try:
