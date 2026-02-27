@@ -230,7 +230,7 @@ DEFAULT_REPLAN_STEPS = 5             # matches official OpenPI LIBERO default
 DEFAULT_SEED = 42                    # match eval.run_libero_eval default for comparable baseline success
 DEFAULT_LEARNING_RATE = 1e-5
 DEFAULT_EVAL_STEPS = 5
-DEFAULT_STEALTH_WEIGHT = 0.3
+DEFAULT_STEALTH_WEIGHT = 0.1
 DEFAULT_MAX_EDIT_CHARS = 200  # hard budget: max Levenshtein char edits
 # For action_inflation: use well above longest suite (520) so the attack rollout has
 # headroom to succeed while taking more steps than baseline; otherwise timeouts zero the reward.
