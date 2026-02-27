@@ -155,7 +155,7 @@ class Pi05LiberoModel:
         train_config_name: str = "pi05_libero",
         checkpoint_path: str | None = None,
         asset_id: str | None = None,
-        action_horizon: int = 50,
+        action_horizon: int = 10,
         replan_steps: int = 5,
     ):
         try:

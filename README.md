@@ -191,7 +191,7 @@ After install, activate and run:
 
 ```bash
 conda activate vast
-python train_vla.py  # trains on libero_90 (all 90 tasks), evals on libero_10 after training
+python train_vla.py  # trains on 28 tasks (IDs 0-6), evals on 12 held-out tasks (IDs 7-9)
 ```
 
 ### Manual install
@@ -256,6 +256,104 @@ await llm.wake_up()
 
 **Error 500:** If you see HTTP 500 when the attack model is called, the vLLM inference server is likely OOM or crashing. See **RUN.md** (§ “Error 500”) for causes and fixes (logs location, `--gpu_memory_utilization`, separate GPUs, patches).
 
+
+### ART runtime fixes (openpipe-art 0.5.9)
+
+Three bugs in ART's training/inference pipeline cause the attack agent to stop learning after the first training step. All patches are in the venv site-packages (e.g. `/venv/vast/lib/python3.11/site-packages/`).
+
+**Fix 1 — vLLM model weights destroyed after sleep/wake (`art/unsloth/service.py`)**
+
+After each GRPO training step, ART puts vLLM to sleep to free GPU memory for Unsloth training, then wakes it up for inference. The original code used `sleep_level=2` when no requests were in flight. In vLLM 0.11, `sleep(level=2)` calls `allocator.sleep(offload_tags=tuple())` — the empty tuple means **no weights are backed up to CPU**. All GPU memory is freed without backup. On `wake_up()`, new memory is allocated but left **uninitialized**, so the model produces a uniform distribution over the vocabulary (every token gets logprob = -ln(151936) = -11.93). Output is random garbage.
+
+`sleep_level=1` calls `allocator.sleep(offload_tags=("weights",))`, which correctly copies model weights to CPU pinned memory before freeing GPU memory, and `wake_up()` restores them.
+
+```python
+# In art/unsloth/service.py, UnslothService.train():
+
+# BEFORE (corrupts model weights):
+has_unfinished = llm.output_processor.has_unfinished_requests()
+if has_unfinished:
+    sleep_level = 1
+else:
+    await llm.reset_prefix_cache()
+    sleep_level = 2
+
+# AFTER (always preserves weights):
+if not llm.output_processor.has_unfinished_requests():
+    await llm.reset_prefix_cache()
+sleep_level = 1
+```
+
+**Fix 2 — Inference model name never updated after training (`art/langgraph/llm_wrapper.py`)**
+
+`wrap_rollout` reads `model.inference_model_name`, which is set once at registration (e.g. `qwen2.5-3B@0`) and never updated. After training creates checkpoint N and registers a new LoRA adapter as `model@N` with vLLM, inference still requests `model@0` — the initial zero-weight adapter. The trained LoRA is never used.
+
+`model._get_inference_model_name()` dynamically queries the backend for the latest checkpoint step. Use it instead of the stale attribute.
+
+```python
+# In art/langgraph/llm_wrapper.py, wrap_rollout():
+
+# BEFORE (stale model name):
+log_path = add_thread(
+    thread_id,
+    model.inference_base_url,
+    model.inference_api_key,
+    model.inference_model_name,
+)
+
+# AFTER (dynamic lookup):
+model_name = (
+    model._get_inference_model_name()
+    if hasattr(model, "_get_inference_model_name")
+    else model.inference_model_name
+)
+log_path = add_thread(
+    thread_id,
+    model.inference_base_url,
+    model.inference_api_key,
+    model_name,
+)
+```
+
+**Fix 3 — Tool bindings lost after training step (`art/langgraph/llm_wrapper.py`)**
+
+When LangGraph updates the LLM config between agent invocations, `LoggingLLM.with_config()` recreates the underlying `ChatOpenAI` client but does not rebind tools. After the first training step, the ReAct agent loses its tool-calling capability and outputs text-only responses (`tools=(none)`, `ATTK: (unchanged)`).
+
+```python
+# In art/langgraph/llm_wrapper.py, LoggingLLM.with_config():
+
+# BEFORE (tools stripped):
+self.llm = new_llm
+
+# AFTER (tools preserved):
+if self.tools:
+    self.llm = new_llm.bind_tools(self.tools)
+elif hasattr(self.llm, "bound"):
+    setattr(self.llm, "bound", new_llm)
+else:
+    self.llm = new_llm
+```
+
+Also add `logprobs=True` to both `ChatOpenAI` constructors (in `init_chat_model()` and `with_config()`) to ensure log probabilities are always captured for GRPO training.
+
+### Rollout robustness fixes (`agent/vla_rollout.py`)
+
+**Fix 4 — EGL rendering context not thread-safe**
+
+MuJoCo's offscreen rendering uses EGL contexts that are thread-local. When multiple rollout coroutines run in the same thread pool, concurrent `env.reset()` calls can corrupt each other's EGL state, causing silent rendering failures (black images) and baseline VLA failures. Fixed by monkey-patching `MjRenderContext.__init__` to call `eglMakeCurrent` after context creation, and wrapping `_reset_env` in `asyncio.to_thread`.
+
+**Fix 5 — Baseline retry for stochastic VLA failures**
+
+The VLA model (Pi0.5) has inherent stochasticity from JAX random seeds. A single failed baseline can cascade (the cached failure is reused for all trajectories sharing that scenario). Added a retry mechanism (`_BASELINE_MAX_ATTEMPTS = 3`) with different random seeds to mitigate this.
+
+**Fix 6 — `ValueError: executing action in terminated episode`**
+
+LIBERO's `step()` method overrode Robosuite's `done` flag inappropriately. Added a guard `if getattr(env, "done", False)` in `_mujoco_step_chunk` to skip actions on already-terminated episodes.
+
+**Fix 7 — `EngineDeadError` after training (wake_up fails)**
+
+If the vLLM EngineCore process dies during the training phase (e.g. OOM when Unsloth uses the GPU, or worker crash), `llm.wake_up()` raises `EngineDeadError`. In `art/unsloth/service.py`: (1) Before `wake_up()`, call `torch.cuda.synchronize()`, `gc_and_empty_cuda_cache(5)`, and `await asyncio.sleep(2.0)` so GPU memory is fully released before workers restore weights. (2) Catch `EngineDeadError` and re-raise as `RuntimeError` with a message suggesting restart with `--resume`. **Reduce risk:** set `ART_PER_DEVICE_TRAIN_BATCH_SIZE=1` (ART reads this in `get_model_config`) to use less GPU memory during training; ensure sufficient RAM for weight offload; check `dmesg` for OOM killer.
+
 ## Quick Evaluation
 
 Compare baseline (clean questions) vs attack (with suffix):
@@ -310,29 +408,48 @@ The same framework can train an attack agent to perturb **instructions and/or ob
 
 The attack agent uses token/char/prompt/visual tools; reward is based on task failure (and optional stealth).
 
-**Default run (train on libero_90, eval on libero_10):**
+**Train/test split (7/3 per suite):**
+
+Each of the 4 LIBERO evaluation suites (10 tasks each) is split into train (tasks 0-6) and held-out test (tasks 7-9). The attack agent never sees test tasks during training.
+
+| | Spatial | Object | Goal | Libero-10 | **Total** |
+|---|---------|--------|------|-----------|-----------|
+| **Train** (0-6) | 7 | 7 | 7 | 7 | **28 tasks** |
+| **Test** (7-9) | 3 | 3 | 3 | 3 | **12 tasks** |
+| Train episodes | 7 | 7 | 7 | 7 | 28 |
+| Test episodes | 30 | 30 | 30 | 30 | **120** |
+
+**Default run:**
 
 ```bash
 cd agent_attack_framework
 python train_vla.py
 ```
 
-By default, this trains on all 90 tasks in `libero_90` and automatically evaluates on
-all 10 tasks in `libero_10` after training completes. Use `--skip_eval` to disable
-post-training evaluation.
+Trains on 28 tasks (IDs 0-6 across 4 suites), then evaluates on 12 held-out tasks
+(IDs 7-9, 10 initial states each = 120 test episodes). Use `--skip_eval` to disable.
+
+**Speedup defaults** (vs. conservative settings):
+
+| Setting | Default | Conservative | Effect |
+|---------|---------|-------------|--------|
+| `--replan_steps` | 20 | 10 | Halves VLA inference calls per episode |
+| `--episodes_per_task` | 1 | 3 | 3x fewer training scenarios; diversity from 28 tasks |
+| `--num_epochs` | 1 | 3 | Single pass; re-train with 3 if results promising |
+| JIT warmup | yes | no | Pre-compiles XLA kernels before training starts |
 
 **Custom task selection:**
 
 ```bash
-python train_vla.py \
-    --task_suite libero_spatial \
-    --task_ids 0-4 \
-    --eval_task_suite libero_10 \
-    --eval_task_ids all
-```
+# Override split
+python train_vla.py --task_ids 0-4 --eval_task_ids 5-9
 
-Task IDs support ranges (`0-89`), comma-separated lists (`0,3,5`), mixed (`0,5,10-19`),
-or `all` to use every task in the suite.
+# Single suite
+python train_vla.py --task_suite libero_spatial
+
+# Multiple suites (comma-separated)
+python train_vla.py --task_suite libero_spatial,libero_object
+```
 
 **Key options:**
 
@@ -341,10 +458,11 @@ or `all` to use every task in the suite.
 | `--objective` | action_inflation | Attack objective (see **Reward design** above) |
 | `--tool_sets` | token,char,prompt | Comma-separated: token, char, prompt, visual |
 | `--max_edit_chars` | 200 | Hard budget: max Levenshtein char edits (add/remove/change) across all tools |
-| `--task_suite` | libero_90 | LIBERO training suite: libero_spatial, libero_object, libero_goal, libero_10, libero_90 |
-| `--task_ids` | all | Task indices: `all`, ranges (`0-89`), or comma-separated (`0,3,5-7`) |
-| `--eval_task_suite` | libero_10 | LIBERO suite for post-training evaluation |
-| `--eval_task_ids` | all | Task indices for evaluation (same syntax as `--task_ids`) |
+| `--task_suite` | libero_spatial,libero_object,libero_goal,libero_10 | Comma-separated LIBERO suites (all 4 eval suites) |
+| `--task_ids` | 0-6 | Training task indices (7 per suite, 28 total) |
+| `--eval_task_suite` | (same as `--task_suite`) | LIBERO suite(s) for post-training evaluation |
+| `--eval_task_ids` | 7-9 | Held-out test task indices (3 per suite, 12 total) |
+| `--eval_episodes_per_task` | 10 | Initial states per test task (12 × 10 = 120 episodes) |
 | `--skip_eval` | false | Skip automatic post-training evaluation |
 | `--vla_gpus` | 0,1,2 | Comma-separated GPU indices for Pi0.5 VLA. One model per GPU for parallel rollouts. |
 | `--attack_gpus` | 3 (auto) | GPU(s) for agent training (vLLM/ART). Default: all visible GPUs except those in `--vla_gpus`. |
@@ -358,14 +476,15 @@ or `all` to use every task in the suite.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--max_turns` | 8 | Max ReAct tool-call rounds per episode. More turns allow chaining multiple tools. |
-| `--replan_steps` | 10 | VLA actions executed per inference chunk before re-planning. Higher = fewer VLA calls per episode. |
-| `--episodes_per_task` | 3 | Initial states (episodes) per task when building scenarios. |
+| `--replan_steps` | 20 | VLA actions executed per inference chunk. 20 halves VLA calls vs 10. |
+| `--episodes_per_task` | 1 | Initial states per training task. |
+| `--num_epochs` | 1 | Training epochs. Set to 3 for more thorough training. |
 | `--trajectories_per_group` | 4 | Rollouts per GRPO group (same scenario, different agent rollouts). |
 | `--groups_per_step` | 4 | Scenario groups gathered before each training step. |
 | `--rollout_workers` | 24 | Concurrent rollout episodes (8 per VLA GPU). MuJoCo runs on CPU threads; VLA inference is serialised per GPU via lock. |
-| `--max_steps` | suite default | Override max env steps per episode (optional). Suite defaults: spatial 220, object 280, goal 300, libero_10 520, libero_90 400. |
+| `--max_steps` | suite default | Override max env steps per episode. Suite defaults: spatial 220, object 280, goal 300, libero_10 520, libero_90 400. |
 
-**LIBERO task suites and train/eval:** LIBERO defines several task suites (see `LIBERO/libero/libero/benchmark/libero_suite_task_map.py`): **libero_spatial**, **libero_object**, **libero_goal** (10 tasks each), **libero_10** (10 tasks, standard benchmark), and **libero_90** (90 tasks, long-tail set). By default, `train_vla.py` trains on **libero_90** (all 90 tasks) and automatically evaluates on **libero_10** (10 held-out tasks) after training. Override with `--task_suite`, `--task_ids`, `--eval_task_suite`, and `--eval_task_ids`. Use `--skip_eval` to disable post-training evaluation. For standalone evaluation, use `eval_vla_attack.py` which defaults to `libero_10`.
+**LIBERO task suites and train/test split:** LIBERO has 130 tasks across five suites: **libero_spatial** (10), **libero_object** (10), **libero_goal** (10), **libero_10** (10), and **libero_90** (90). Pi0.5-LIBERO achieves >95% success on the first four suites but only ~20-30% on `libero_90` (see [openpi#734](https://github.com/Physical-Intelligence/openpi/issues/734)). We use a **7/3 train/test split** within each of the 4 eval suites: tasks 0-6 for training (28 tasks), tasks 7-9 held out for testing (12 tasks). Test episodes are accumulated through multiple initial states (10 per task = 120 test episodes total, 30 per category).
 
 **GPU requirements: 4x A100-80GB (or equivalent)**
 
@@ -376,10 +495,9 @@ The default configuration uses 4 GPUs. Running `python train_vla.py` with no arg
 | `--vla_gpus` | `0,1,2` (3 Pi0.5-LIBERO copies) |
 | `--attack_gpus` | `3` (auto-detected) |
 | `--rollout_workers` | `24` (8 per VLA GPU) |
-| `--task_suite` | `libero_90` (all 90 train tasks) |
-| `--task_ids` | `all` |
-| `--eval_task_suite` | `libero_10` (10 eval tasks) |
-| `--eval_task_ids` | `all` |
+| `--task_suite` | `libero_spatial,libero_object,libero_goal,libero_10` |
+| `--task_ids` | `0-6` (28 train tasks) |
+| `--eval_task_ids` | `7-9` (12 test tasks, 120 episodes) |
 | VLA model | Pi0.5-LIBERO (auto-download from GCS) |
 | Attack agent | Qwen/Qwen2.5-3B-Instruct |
 

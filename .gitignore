@@ -45,3 +45,6 @@ runs/
 # ART checkpoints, vLLM logs, trajectories (do not commit)
 outputs/
 openpi/
+
+# Eval result JSONs (optional; keep if you want to track metrics)
+eval/results/

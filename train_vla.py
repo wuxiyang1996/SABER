@@ -4,18 +4,22 @@ Trains an LLM attack agent to perturb instructions/observations fed to
 π0.5 in LIBERO, optimising for a single declared attack objective via
 Group Relative Policy Optimisation (GRPO).
 
-By default, trains on **libero_90** (all 90 LIBERO tasks) and automatically
-evaluates on **libero_10** (10 held-out tasks) after training completes.
+Train/test split (7/3 per suite, 4 eval suites):
+  - **Train**: tasks 0-6 from each suite = 28 tasks × 1 init state = 28 scenarios
+  - **Test** : tasks 7-9 from each suite = 12 tasks × 10 init states = 120 episodes
+
+Speedup defaults: replan_steps=20, episodes_per_task=1, num_epochs=1.
 
 Usage
 -----
-    # Default: train on libero_90, eval on libero_10
+    # Default: 7/3 split, train on 28 tasks, eval on 12 held-out tasks
     python train_vla.py
 
-    # Custom suite / task subset
-    python train_vla.py \\
-        --task_suite libero_spatial --task_ids 0-4 \\
-        --eval_task_suite libero_10 --eval_task_ids all
+    # Custom suite(s)
+    python train_vla.py --task_suite libero_spatial,libero_object
+
+    # Override split
+    python train_vla.py --task_ids 0-4 --eval_task_ids 5-9
 
     # Skip post-training evaluation
     python train_vla.py --skip_eval
@@ -42,6 +46,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import warnings
 
 # Suppress JAX/Flax deprecation warnings from Pi0.5/openpi (ShapeDtypeStruct, wrap_init DebugInfo).
@@ -187,6 +192,7 @@ from agent.vla_rollout import (
     ToolSet,
     VLAAttackScenario,
     build_scenarios,
+    build_scenarios_multi_suite,
     clear_baseline_cache,
     parse_task_ids,
     set_vla_model,
@@ -210,17 +216,25 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OBJECTIVE = "action_inflation"
 DEFAULT_TOOL_SETS = "token,char,prompt"
-DEFAULT_TASK_SUITE = "libero_90"
-DEFAULT_TASK_IDS = "all"
-DEFAULT_EPISODES_PER_TASK = 3        # initial states per task
-DEFAULT_TRAJECTORIES_PER_GROUP = 4   # GRPO group size
+# Train/test split: 7/3 per suite across all 4 eval suites (Pi0.5 >95% success).
+# Train: tasks 0-6 (28 tasks), Test: tasks 7-9 (12 tasks, 120 episodes).
+DEFAULT_TASK_SUITE = "libero_spatial,libero_object,libero_goal,libero_10"
+DEFAULT_TASK_IDS = "0-6"
+DEFAULT_EVAL_TASK_IDS = "7-9"
+DEFAULT_EVAL_EPISODES_PER_TASK = 5   # init states per test task (12 tasks × 5 = 60 episodes)
+DEFAULT_EPISODES_PER_TASK = 1        # 1 init state per task; diversity comes from 28 tasks
+DEFAULT_TRAJECTORIES_PER_GROUP = 8   # GRPO group size; matches 8 rollout workers per GPU
 DEFAULT_GROUPS_PER_STEP = 4          # groups gathered before one train step
-DEFAULT_NUM_EPOCHS = 3
+DEFAULT_NUM_EPOCHS = 3               # 3 passes over 28 scenarios = 21 training steps
+DEFAULT_REPLAN_STEPS = 5             # matches official OpenPI LIBERO default
+DEFAULT_SEED = 42                    # match eval.run_libero_eval default for comparable baseline success
 DEFAULT_LEARNING_RATE = 1e-5
 DEFAULT_EVAL_STEPS = 5
 DEFAULT_STEALTH_WEIGHT = 0.3
 DEFAULT_MAX_EDIT_CHARS = 200  # hard budget: max Levenshtein char edits
-DEFAULT_MAX_STEPS = None  # use suite default
+# For action_inflation: use well above longest suite (520) so the attack rollout has
+# headroom to succeed while taking more steps than baseline; otherwise timeouts zero the reward.
+DEFAULT_MAX_STEPS = 800
 
 
 # ============================================================================
@@ -250,7 +264,15 @@ async def train(args: argparse.Namespace) -> None:
     # --- Parse objective and tool sets --------------------------------
     objective = AttackObjective(args.objective)
     tool_sets = [ToolSet(t.strip()) for t in args.tool_sets.split(",")]
-    task_ids = parse_task_ids(args.task_ids, args.task_suite)
+
+    # Parse suite(s) — supports comma-separated multi-suite
+    _suite_names = [s.strip() for s in args.task_suite.split(",")]
+    _multi_suite = len(_suite_names) > 1
+    suite_specs: list[tuple[str, list[int]]] = []
+    for sn in _suite_names:
+        sn_ids = parse_task_ids(args.task_ids, sn)
+        suite_specs.append((sn, sn_ids))
+    total_tasks = sum(len(ids) for _, ids in suite_specs)
 
     logger.info("=" * 60)
     logger.info("VLA Attack Agent — GRPO Training")
@@ -258,8 +280,13 @@ async def train(args: argparse.Namespace) -> None:
     logger.info("  Objective:        %s", objective.value)
     logger.info("  Tool sets:        %s", [ts.value for ts in tool_sets])
     logger.info("  Max turns:        %d (ReAct tool-call rounds per episode)", args.max_turns)
-    logger.info("  Task suite:       %s", args.task_suite)
-    logger.info("  Task IDs:         %s", task_ids)
+    if _multi_suite:
+        logger.info("  Task suites:      %s (%d tasks total)", _suite_names, total_tasks)
+        for sn, sn_ids in suite_specs:
+            logger.info("    %-20s %d tasks  IDs=%s", sn, len(sn_ids), sn_ids)
+    else:
+        logger.info("  Task suite:       %s", args.task_suite)
+        logger.info("  Task IDs:         %s", suite_specs[0][1])
     logger.info("  Episodes/task:    %d", args.episodes_per_task)
     logger.info("  Trajs/group:      %d", args.trajectories_per_group)
     logger.info("  Groups/step:      %d", args.groups_per_step)
@@ -268,6 +295,8 @@ async def train(args: argparse.Namespace) -> None:
     logger.info("  Replan steps:     %d (VLA inference every N env steps)", args.replan_steps)
     logger.info("  Rollout workers:  %d threads", args.rollout_workers)
     logger.info("  Stealth weight:   %s", args.stealth_weight)
+    logger.info("  No-attack penalty: %s (reward when no tool used)", args.no_attack_penalty)
+    logger.info("  Short trajectory penalty: %s (when attack steps < %.0f%% of baseline)", args.short_trajectory_penalty, args.short_trajectory_ratio * 100)
     logger.info("  Max edit chars:   %d (hard budget)", args.max_edit_chars)
     logger.info("=" * 60)
 
@@ -312,7 +341,8 @@ async def train(args: argparse.Namespace) -> None:
             "objective": args.objective,
             "tool_sets": args.tool_sets,
             "task_suite": args.task_suite,
-            "task_ids": task_ids,
+            "suite_specs": {sn: ids for sn, ids in suite_specs},
+            "total_tasks": total_tasks,
             "episodes_per_task": args.episodes_per_task,
             "trajectories_per_group": args.trajectories_per_group,
             "groups_per_step": args.groups_per_step,
@@ -420,7 +450,7 @@ async def train(args: argparse.Namespace) -> None:
             vla_model = Pi05LiberoModel(
                 train_config_name=args.vla_config_name,
                 checkpoint_path=args.vla_checkpoint,
-                action_horizon=50,
+                action_horizon=10,  # matches pi05_libero config
                 replan_steps=5,
             )
         models_and_devices.append((vla_model, vla_jax_device))
@@ -430,6 +460,22 @@ async def train(args: argparse.Namespace) -> None:
         "Pi0.5 VLA model pool ready: %d instance(s) on GPU(s) %s.",
         len(vla_gpus), vla_gpus,
     )
+
+    # --- JIT warmup: trigger XLA compilation on each GPU ---------------
+    # First inference on each device compiles XLA kernels (30-60s).
+    # Running a dummy inference here avoids that latency during training.
+    import numpy as np
+    logger.info("JIT warmup: running dummy inference on %d VLA instance(s)...", len(models_and_devices))
+    _warmup_t0 = time.time()
+    _dummy_img = np.zeros((224, 224, 3), dtype=np.uint8)
+    _dummy_state = np.zeros(8, dtype=np.float32)
+    for i, (model, dev) in enumerate(models_and_devices):
+        model.set_language("warmup")
+        with jax.default_device(dev):
+            _ = model.predict(_dummy_img, _dummy_img, _dummy_state)
+        logger.info("  GPU %d warmup done.", vla_gpus[i])
+    _warmup_elapsed = time.time() - _warmup_t0
+    logger.info("JIT warmup complete in %.1fs. All kernels compiled.", _warmup_elapsed)
 
     # --- Switch CUDA_VISIBLE_DEVICES to attack GPUs for vLLM ----------
     # JAX init only saw VLA GPUs; now expose only the attack GPU(s) so
@@ -441,19 +487,39 @@ async def train(args: argparse.Namespace) -> None:
     )
 
     # --- Build scenarios ----------------------------------------------
-    train_scenarios = build_scenarios(
-        objective=objective,
-        tool_sets=tool_sets,
-        task_suite_name=args.task_suite,
-        task_ids=task_ids,
-        episodes_per_task=args.episodes_per_task,
-        stealth_weight=args.stealth_weight,
-        max_edit_chars=args.max_edit_chars,
-        max_steps=args.max_steps,
-        max_turns=args.max_turns,
-        replan_steps=args.replan_steps,
-        seed=args.seed,
-    )
+    if _multi_suite:
+        train_scenarios = build_scenarios_multi_suite(
+            objective=objective,
+            tool_sets=tool_sets,
+            suite_specs=suite_specs,
+            episodes_per_task=args.episodes_per_task,
+            stealth_weight=args.stealth_weight,
+            no_attack_penalty=args.no_attack_penalty,
+            short_trajectory_penalty=args.short_trajectory_penalty,
+            short_trajectory_ratio_threshold=args.short_trajectory_ratio,
+            max_edit_chars=args.max_edit_chars,
+            max_steps=args.max_steps,
+            max_turns=args.max_turns,
+            replan_steps=args.replan_steps,
+            seed=args.seed,
+        )
+    else:
+        train_scenarios = build_scenarios(
+            objective=objective,
+            tool_sets=tool_sets,
+            task_suite_name=_suite_names[0],
+            task_ids=suite_specs[0][1],
+            episodes_per_task=args.episodes_per_task,
+            stealth_weight=args.stealth_weight,
+            no_attack_penalty=args.no_attack_penalty,
+            short_trajectory_penalty=args.short_trajectory_penalty,
+            short_trajectory_ratio_threshold=args.short_trajectory_ratio,
+            max_edit_chars=args.max_edit_chars,
+            max_steps=args.max_steps,
+            max_turns=args.max_turns,
+            replan_steps=args.replan_steps,
+            seed=args.seed,
+        )
     logger.info("Built %d training scenarios.", len(train_scenarios))
 
     # --- By default train from scratch; clear existing ART checkpoints ----
@@ -624,7 +690,7 @@ async def train(args: argparse.Namespace) -> None:
 
     logger.info("Training complete.")
 
-    # ---- Post-training evaluation on held-out suite ----------------------
+    # ---- Post-training evaluation on held-out test tasks ------------------
     if args.skip_eval:
         logger.info("Skipping post-training evaluation (--skip_eval).")
     else:
@@ -635,27 +701,61 @@ async def train(args: argparse.Namespace) -> None:
             metrics_to_latex_row,
         )
 
-        eval_task_ids = parse_task_ids(args.eval_task_ids, args.eval_task_suite)
+        _eval_suite_str = args.eval_task_suite or args.task_suite
+        _eval_suite_names = [s.strip() for s in _eval_suite_str.split(",")]
+        _eval_multi = len(_eval_suite_names) > 1
+        eval_suite_specs: list[tuple[str, list[int]]] = []
+        for sn in _eval_suite_names:
+            sn_ids = parse_task_ids(args.eval_task_ids, sn)
+            eval_suite_specs.append((sn, sn_ids))
+        eval_total = sum(len(ids) for _, ids in eval_suite_specs)
+
         logger.info("=" * 60)
-        logger.info("Post-training evaluation")
+        logger.info("Post-training evaluation (held-out test tasks)")
         logger.info("=" * 60)
-        logger.info("  Eval suite:       %s", args.eval_task_suite)
-        logger.info("  Eval task IDs:    %s (%d tasks)", eval_task_ids, len(eval_task_ids))
+        if _eval_multi:
+            logger.info("  Eval suites:      %s (%d tasks, %d episodes total)",
+                        _eval_suite_names, eval_total,
+                        eval_total * args.eval_episodes_per_task)
+            for sn, sn_ids in eval_suite_specs:
+                logger.info("    %-20s %d tasks  IDs=%s", sn, len(sn_ids), sn_ids)
+        else:
+            logger.info("  Eval suite:       %s (%d tasks)", _eval_suite_names[0], eval_total)
         logger.info("  Episodes/task:    %d", args.eval_episodes_per_task)
 
-        eval_scenarios = build_scenarios(
-            objective=objective,
-            tool_sets=tool_sets,
-            task_suite_name=args.eval_task_suite,
-            task_ids=eval_task_ids,
-            episodes_per_task=args.eval_episodes_per_task,
-            stealth_weight=args.stealth_weight,
-            max_edit_chars=args.max_edit_chars,
-            max_steps=args.max_steps,
-            max_turns=args.max_turns,
-            replan_steps=args.replan_steps,
-            seed=args.seed,
-        )
+        if _eval_multi:
+            eval_scenarios = build_scenarios_multi_suite(
+                objective=objective,
+                tool_sets=tool_sets,
+                suite_specs=eval_suite_specs,
+                episodes_per_task=args.eval_episodes_per_task,
+                stealth_weight=args.stealth_weight,
+                no_attack_penalty=args.no_attack_penalty,
+                short_trajectory_penalty=args.short_trajectory_penalty,
+                short_trajectory_ratio_threshold=args.short_trajectory_ratio,
+                max_edit_chars=args.max_edit_chars,
+                max_steps=args.max_steps,
+                max_turns=args.max_turns,
+                replan_steps=args.replan_steps,
+                seed=args.seed,
+            )
+        else:
+            eval_scenarios = build_scenarios(
+                objective=objective,
+                tool_sets=tool_sets,
+                task_suite_name=_eval_suite_names[0],
+                task_ids=eval_suite_specs[0][1],
+                episodes_per_task=args.eval_episodes_per_task,
+                stealth_weight=args.stealth_weight,
+                no_attack_penalty=args.no_attack_penalty,
+                short_trajectory_penalty=args.short_trajectory_penalty,
+                short_trajectory_ratio_threshold=args.short_trajectory_ratio,
+                max_edit_chars=args.max_edit_chars,
+                max_steps=args.max_steps,
+                max_turns=args.max_turns,
+                replan_steps=args.replan_steps,
+                seed=args.seed,
+            )
         logger.info("Built %d eval scenarios.", len(eval_scenarios))
 
         all_eval_trajectories = []
@@ -693,20 +793,21 @@ async def train(args: argparse.Namespace) -> None:
         eval_metrics = compute_metrics_from_trajectories(all_eval_trajectories)
         _print_metrics(eval_metrics, step=current_step, logger_fn=logger.info)
 
-        latex_label = f"{args.eval_task_suite} (step {current_step})"
+        _eval_suite_tag = "+".join(_eval_suite_names)
+        latex_label = f"{_eval_suite_tag} (step {current_step})"
         logger.info("LaTeX table row:\n%s", metrics_to_latex_row(eval_metrics, label=latex_label))
 
         _eval_report_name = (
-            f"eval_step{current_step}_{args.eval_task_suite}"
+            f"eval_step{current_step}_{_eval_suite_tag}"
             f"_n{len(all_eval_trajectories)}.json"
         )
         report = {
             "config": {
                 "run_name": _run_name,
-                "train_suite": args.task_suite,
-                "train_task_ids": task_ids,
-                "eval_suite": args.eval_task_suite,
-                "eval_task_ids": eval_task_ids,
+                "train_suites": args.task_suite,
+                "train_suite_specs": {sn: ids for sn, ids in suite_specs},
+                "eval_suites": _eval_suite_str,
+                "eval_suite_specs": {sn: ids for sn, ids in eval_suite_specs},
                 "eval_episodes_per_task": args.eval_episodes_per_task,
                 "checkpoint_step": current_step,
                 "vla_config": args.vla_config_name,
@@ -787,25 +888,38 @@ def main():
         help="λ for the stealth penalty in the reward.",
     )
     parser.add_argument(
+        "--no_attack_penalty", type=float, default=-1.0,
+        help="Fixed reward when the agent does not call any attack tool (default -1.0). Stronger than -0.5 to encourage tool use.",
+    )
+    parser.add_argument(
+        "--short_trajectory_penalty", type=float, default=0.2,
+        help="Extra penalty when post-attack trajectory is much shorter than baseline (default 0.2). Set 0 to disable.",
+    )
+    parser.add_argument(
+        "--short_trajectory_ratio", type=float, default=0.5,
+        help="Apply short_trajectory_penalty when attack_steps < baseline_steps * this (default 0.5 = 50%% shorter).",
+    )
+    parser.add_argument(
         "--max_edit_chars", type=int, default=DEFAULT_MAX_EDIT_CHARS,
         help="Hard budget: max Levenshtein character edits (add/remove/change) allowed. Applies to all tool types.",
     )
     parser.add_argument(
-        "--replan_steps", type=int, default=10,
+        "--replan_steps", type=int, default=DEFAULT_REPLAN_STEPS,
         help=(
             "Actions to execute from each VLA prediction chunk before re-planning. "
-            "Higher = fewer VLA model calls per episode (faster) but less reactive. "
-            "With action_horizon=50, replan_steps=10 means 1 VLA inference per 10 "
-            "env steps (vs. 5 by default). Range 5–20."
+            "Higher = fewer VLA model calls (faster). Default 20: halves VLA calls "
+            "vs 10, fine for LIBERO tabletop tasks. Range 5–50."
         ),
     )
 
     # --- LIBERO task config ---
     parser.add_argument(
         "--task_suite", type=str, default=DEFAULT_TASK_SUITE,
-        choices=["libero_spatial", "libero_object", "libero_goal",
-                 "libero_10", "libero_90"],
-        help="LIBERO task suite.",
+        help=(
+            "LIBERO task suite(s). Comma-separated for multi-suite. "
+            "Default: 4 eval suites (40 tasks). "
+            "Valid: libero_spatial, libero_object, libero_goal, libero_10, libero_90."
+        ),
     )
     parser.add_argument(
         "--task_ids", type=str, default=DEFAULT_TASK_IDS,
@@ -820,27 +934,28 @@ def main():
     )
     parser.add_argument(
         "--max_steps", type=int, default=DEFAULT_MAX_STEPS,
-        help="Override max steps per episode (None = suite default).",
+        help="Max steps per episode. Default 800 for action_inflation (headroom so attack can succeed with more steps).",
     )
-    parser.add_argument("--seed", type=int, default=7, help="Environment seed.")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Environment seed (use 42 to match eval.run_libero_eval baseline).")
 
     # --- Post-training evaluation config ---
     parser.add_argument(
-        "--eval_task_suite", type=str, default="libero_10",
-        choices=["libero_spatial", "libero_object", "libero_goal",
-                 "libero_10", "libero_90"],
-        help="LIBERO task suite for post-training evaluation (default: libero_10).",
-    )
-    parser.add_argument(
-        "--eval_task_ids", type=str, default="all",
+        "--eval_task_suite", type=str, default=None,
         help=(
-            "Task indices for post-training evaluation.  Same syntax as "
-            "--task_ids ('all', ranges, comma-separated)."
+            "LIBERO suite(s) for post-training evaluation. Comma-separated. "
+            "Defaults to the same suites used for training."
         ),
     )
     parser.add_argument(
-        "--eval_episodes_per_task", type=int, default=3,
-        help="Number of episodes per task during post-training evaluation.",
+        "--eval_task_ids", type=str, default=DEFAULT_EVAL_TASK_IDS,
+        help=(
+            "Task indices for evaluation (default: 7-9, held-out test split). "
+            "Same syntax as --task_ids."
+        ),
+    )
+    parser.add_argument(
+        "--eval_episodes_per_task", type=int, default=DEFAULT_EVAL_EPISODES_PER_TASK,
+        help="Initial states per test task. More = more robust metrics. Default: 10.",
     )
     parser.add_argument(
         "--skip_eval", action="store_true",
