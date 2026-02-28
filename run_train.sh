@@ -21,17 +21,18 @@ $PYTHON train_vla.py \
   --task_suite libero_spatial,libero_object,libero_goal,libero_10 \
   --task_ids 0-6 \
   --episodes_per_task 1 \
-  --trajectories_per_group 2 \
-  --groups_per_step 16 \
+  --trajectories_per_group 8 \
+  --groups_per_step 2 \
   --num_epochs 10 \
-  --learning_rate 5e-06 \
-  --stealth_weight 0.15 \
+  --learning_rate 2e-05 \
+  --stealth_weight 0.03 \
   --max_edit_chars 200 \
-  --max_turns 8 \
+  --max_turns 10 \
   --replan_steps 5 \
   --max_steps 800 \
   --seed 42 \
   --rollout_workers 24 \
+  --lora_r 16 \
   --eval_task_ids 7-9 \
   --eval_episodes_per_task 5 \
   --vla_gpus 0,1,2 \

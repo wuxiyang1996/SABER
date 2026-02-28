@@ -689,6 +689,37 @@ async def train(args: argparse.Namespace) -> None:
             groups, metrics=result.metrics, step=result.step, split="train",
         )
 
+        # Log ART training internals (loss, gradients, etc.)
+        if result.metrics:
+            _train_lines = []
+            for k, v in sorted(result.metrics.items()):
+                _train_lines.append(f"    {k}: {v}")
+            logger.info(
+                "Training update metrics (step %d):\n%s",
+                batch.step, "\n".join(_train_lines),
+            )
+        else:
+            logger.warning("Step %d: no training metrics returned by backend.", batch.step)
+
+        # Log per-group reward statistics for gradient debugging
+        _group_rewards = []
+        for g in groups:
+            _grp_r = [t.reward for t in g.trajectories]
+            _group_rewards.append(_grp_r)
+        _all_rewards = [r for grp in _group_rewards for r in grp]
+        if _all_rewards:
+            _r_mean = sum(_all_rewards) / len(_all_rewards)
+            _r_std = (sum((r - _r_mean) ** 2 for r in _all_rewards) / len(_all_rewards)) ** 0.5
+            _per_group_strs = []
+            for i, grp in enumerate(_group_rewards):
+                _g_mean = sum(grp) / len(grp)
+                _g_std = (sum((r - _g_mean) ** 2 for r in grp) / len(grp)) ** 0.5
+                _per_group_strs.append(f"G{i}: μ={_g_mean:.3f} σ={_g_std:.3f}")
+            logger.info(
+                "Reward distribution (step %d): overall μ=%.3f σ=%.3f | %s",
+                batch.step, _r_mean, _r_std, " | ".join(_per_group_strs),
+            )
+
         # Log summary statistics and evaluation metrics
         from rwd_func.metrics import compute_metrics, print_metrics
         step_metrics = compute_metrics(groups)
