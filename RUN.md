@@ -14,6 +14,30 @@ Or call the script directly (same options):
 python train_vla.py --objective task_failure --task_suite libero_spatial --task_ids 0,1,2
 ```
 
+### Run with Qwen2.5 7B as the attack agent
+
+Use a 7B agent for stronger attack behavior (requires more GPU memory for vLLM):
+
+```bash
+python run.py vla \
+  --base_model Qwen/Qwen2.5-7B-Instruct \
+  --model_name qwen2.5-7B \
+  --objective task_failure \
+  --task_suite libero_spatial \
+  --task_ids 0,1,2
+```
+
+Other objectives: `action_inflation`, `thinking_inflation`, `hallucination`, `constraint_violation`. Example for action inflation:
+
+```bash
+python run.py vla \
+  --base_model Qwen/Qwen2.5-7B-Instruct \
+  --model_name qwen2.5-7B \
+  --objective action_inflation \
+  --task_suite libero_spatial \
+  --task_ids 0,1,2
+```
+
 ### Ensuring the agent can deploy multi-tool attacks
 
 To improve attack success, allow the agent to use **multiple tools** (and more rounds):

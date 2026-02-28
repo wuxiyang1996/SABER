@@ -33,6 +33,7 @@ from .char_attack import (
     find_alter_char_targets,
     find_swap_chars_targets,
     find_flip_case_targets,
+    find_multi_char_targets,
     char_attack_pipeline,
     CHAR_FIND_REGISTRY,
     # Phase 2: APPLY
@@ -41,6 +42,7 @@ from .char_attack import (
     apply_alter_char,
     apply_swap_chars,
     apply_flip_case,
+    apply_multi_char_edit,
     apply_char_attack,
     CHAR_ATTACK_REGISTRY,
     # Tool schemas

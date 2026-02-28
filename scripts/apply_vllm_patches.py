@@ -2,7 +2,7 @@
 """
 Apply ART 0.5.x ↔ vLLM 0.11.x compatibility patches.
 
-Seven patches:
+Eight patches:
   1. Add pause_generation / resume_generation stubs to AsyncLLM
      (ART calls them; vLLM < 0.16 does not have them).
   2. Replace run_on_workers(do_sleep/do_wake_up) with native
@@ -31,10 +31,18 @@ Seven patches:
      work because Unsloth re-assigns the method on every call.  Patching
      the compiled UnslothGRPOTrainer.py also fails because Unsloth's
      compiler regenerates it on every import.
+  8. Relax GRPO reward-equality checks so near-identical rewards still
+     produce gradient signal.  ART skips training when all trajectories
+     in a group share the exact same reward (set-based equality).  For
+     tool-calling agents, structured output suppresses sampling diversity,
+     causing all trajectories to produce identical attacks/rewards.
+       a) backend.py: use max−min tolerance instead of set uniqueness.
+       b) tokenize.py: skip advantage only when |advantage| < 1e-8.
 
 Usage:
     python scripts/apply_vllm_patches.py          # auto-detect site-packages
     python scripts/apply_vllm_patches.py --check   # dry-run: report status only
+    python scripts/apply_vllm_patches.py --site-packages /path/to/site-packages  # when not in env
 """
 from __future__ import annotations
 
@@ -46,11 +54,16 @@ import sys
 
 
 def _site_packages() -> str:
-    """Return the site-packages directory for the active Python."""
+    """Return the site-packages (or dist-packages) directory for the active Python."""
     for p in sys.path:
-        if p.endswith("site-packages") and os.path.isdir(p):
+        if p and os.path.isdir(p) and (
+            p.endswith("site-packages") or p.endswith("dist-packages")
+        ):
             return p
-    raise RuntimeError("Could not find site-packages in sys.path")
+    raise RuntimeError(
+        "Could not find site-packages or dist-packages in sys.path. "
+        "Run from your conda/venv (e.g. conda activate vast) or pass --site-packages /path/to/site-packages"
+    )
 
 
 PAUSE_RESUME_STUB = '''\
@@ -550,12 +563,107 @@ def patch_accelerate_bnb_check(sp: str, *, dry_run: bool = False) -> bool:
     return True
 
 
+def patch_grpo_reward_tolerance(sp: str, *, dry_run: bool = False) -> bool:
+    """Patch 8: relax GRPO trainability checks so near-identical rewards still train.
+
+    ART skips training when all trajectories in every group have the *exact*
+    same reward (set-based equality).  For tool-calling agents the structured
+    output format suppresses sampling diversity, so a group of 8 trajectories
+    often produces identical attacks → identical rewards → zero gradient
+    updates for the entire run.
+
+    Two sub-patches:
+      a) art/local/backend.py  — trainability metric uses a tolerance instead
+         of exact ``set()`` equality.
+      b) art/preprocessing/tokenize.py — per-trajectory advantage skip uses
+         ``abs(advantage) < eps`` instead of ``advantage == 0``.
+    """
+    changed = False
+
+    # --- 8a: backend.py trainability check --------------------------------
+    path_a = os.path.join(sp, "art", "local", "backend.py")
+    if os.path.isfile(path_a):
+        with open(path_a) as f:
+            src_a = f.read()
+
+        old_trainable = (
+            "        num_groups_trainable = sum(\n"
+            "            1\n"
+            "            for group in trajectory_groups\n"
+            "            if group and len(set(trajectory.reward for trajectory in group)) > 1\n"
+            "        )"
+        )
+        new_trainable = (
+            "        num_groups_trainable = sum(\n"
+            "            1\n"
+            "            for group in trajectory_groups\n"
+            "            if group and (max(t.reward for t in group) - min(t.reward for t in group)) > 1e-6\n"
+            "        )"
+        )
+
+        if "1e-6" in src_a and "max(t.reward" in src_a:
+            print("[OK]   Patch 8a: GRPO trainability tolerance already present")
+        elif old_trainable in src_a:
+            if dry_run:
+                print("[NEED] Patch 8a: relax GRPO trainability check in backend.py")
+                return True
+            patched_a = src_a.replace(old_trainable, new_trainable, 1)
+            with open(path_a, "w") as f:
+                f.write(patched_a)
+            print(f"[DONE] Patch 8a: relaxed GRPO trainability check in {path_a}")
+            changed = True
+        else:
+            print("[SKIP] Patch 8a: trainability anchor not found in backend.py")
+    else:
+        print(f"[SKIP] Patch 8a: {path_a} not found")
+
+    # --- 8b: tokenize.py advantage skip -----------------------------------
+    path_b = os.path.join(sp, "art", "preprocessing", "tokenize.py")
+    if os.path.isfile(path_b):
+        with open(path_b) as f:
+            src_b = f.read()
+
+        old_skip = "            if advantage == 0:\n                continue"
+        new_skip = "            if abs(advantage) < 1e-8:\n                continue"
+
+        if "abs(advantage)" in src_b:
+            print("[OK]   Patch 8b: advantage tolerance already present")
+        elif old_skip in src_b:
+            if dry_run:
+                print("[NEED] Patch 8b: relax advantage skip in tokenize.py")
+                return True
+            patched_b = src_b.replace(old_skip, new_skip, 1)
+            with open(path_b, "w") as f:
+                f.write(patched_b)
+            print(f"[DONE] Patch 8b: relaxed advantage skip in {path_b}")
+            changed = True
+        else:
+            print("[SKIP] Patch 8b: advantage skip anchor not found in tokenize.py")
+    else:
+        print(f"[SKIP] Patch 8b: {path_b} not found")
+
+    if not changed and not dry_run:
+        print("[OK]   Patch 8: GRPO reward tolerance already applied")
+    return changed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Dry-run: report status only")
+    parser.add_argument(
+        "--site-packages",
+        type=str,
+        default=None,
+        help="Path to site-packages (e.g. from conda env). If not set, auto-detect from sys.path.",
+    )
     args = parser.parse_args()
 
-    sp = _site_packages()
+    if args.site_packages:
+        sp = os.path.abspath(args.site_packages)
+        if not os.path.isdir(sp):
+            raise RuntimeError(f"--site-packages path is not a directory: {sp}")
+    else:
+        sp = _site_packages()
     print(f"site-packages: {sp}\n")
 
     p1 = patch_async_llm(sp, dry_run=args.check)
@@ -565,8 +673,9 @@ def main() -> None:
     p5 = patch_split_gpu_sleep_wake(sp, dry_run=args.check)
     p6 = patch_get_model_config_training_device(sp, dry_run=args.check)
     p7 = patch_accelerate_bnb_check(sp, dry_run=args.check)
+    p8 = patch_grpo_reward_tolerance(sp, dry_run=args.check)
 
-    any_needed = p1 or p2 or p3 or p4 or p5 or p6 or p7
+    any_needed = p1 or p2 or p3 or p4 or p5 or p6 or p7 or p8
     if args.check:
         if any_needed:
             print("\nRun without --check to apply patches.")
