@@ -127,6 +127,7 @@ for _p in (_PROJECT_ROOT, _LIBERO_ROLLOUTS):
 import art
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langgraph.errors import GraphRecursionError
 from langgraph.prebuilt import create_react_agent
 from art.langgraph import init_chat_model, wrap_rollout  # noqa: F401
 
@@ -1663,40 +1664,28 @@ async def vla_attack_rollout(
     # init_chat_model reads model/base_url/api_key from CURRENT_CONFIG
     # (set by wrap_rollout); positional and keyword args are ignored by ART.
     chat_model = init_chat_model()
-    # Force the model to call at least one tool each turn when possible (reduces
-    # no-op text-only responses). bind_tools(..., tool_choice="required") is
-    # supported by OpenAI-compatible APIs; fall back to no tool_choice if not.
-    try:
-        model_with_tool_choice = chat_model.bind_tools(
-            attack_tools, tool_choice="required"
-        )
-        react_agent = create_react_agent(model_with_tool_choice, attack_tools)
-    except TypeError:
-        try:
-            model_with_tool_choice = chat_model.bind_tools(
-                attack_tools, tool_choice="any"
-            )
-            react_agent = create_react_agent(model_with_tool_choice, attack_tools)
-        except Exception:
-            react_agent = create_react_agent(chat_model, attack_tools)
+    react_agent = create_react_agent(chat_model, attack_tools)
 
     config = {
         "configurable": {"thread_id": str(uuid.uuid4())},
         "recursion_limit": scenario.max_turns * 2,
     }
 
+    agent_messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_message),
+    ]
+
+    agent_result = None
     _MAX_AGENT_RETRIES = 3
     for _attempt in range(_MAX_AGENT_RETRIES):
         try:
-            await react_agent.ainvoke(
-                {
-                    "messages": [
-                        SystemMessage(content=system_prompt),
-                        HumanMessage(content=user_message),
-                    ],
-                },
+            agent_result = await react_agent.ainvoke(
+                {"messages": agent_messages},
                 config=config,
             )
+            break
+        except GraphRecursionError:
             break
         except Exception as e:
             is_server_error = "500" in str(e) or "Internal Server Error" in str(e)
@@ -1713,21 +1702,7 @@ async def vla_attack_rollout(
                 )
                 attack_tools = build_vla_attack_tools(state, scenario.tool_sets)
                 chat_model = init_chat_model()
-                try:
-                    model_with_tool_choice = chat_model.bind_tools(
-                        attack_tools, tool_choice="required"
-                    )
-                    react_agent = create_react_agent(model_with_tool_choice, attack_tools)
-                except TypeError:
-                    try:
-                        model_with_tool_choice = chat_model.bind_tools(
-                            attack_tools, tool_choice="any"
-                        )
-                        react_agent = create_react_agent(
-                            model_with_tool_choice, attack_tools
-                        )
-                    except Exception:
-                        react_agent = create_react_agent(chat_model, attack_tools)
+                react_agent = create_react_agent(chat_model, attack_tools)
                 config["configurable"]["thread_id"] = str(uuid.uuid4())
                 continue
             logger.error(
@@ -1740,6 +1715,34 @@ async def vla_attack_rollout(
             trajectory.metadata["attacked"] = True
             trajectory.metadata["rollout_type"] = "attacked"
             return trajectory
+
+    # If the agent called find-phase tools but never applied a mutation,
+    # re-invoke with the full conversation history plus a nudge so the
+    # model sees its own find_targets results and can call an apply tool.
+    if state.tools_used and not state.attack_applied and agent_result is not None:
+        logger.debug(
+            "Agent called %s but applied nothing — re-prompting with nudge.",
+            state.tools_used,
+        )
+        nudge = (
+            "You called a find tool but did not apply any mutation. "
+            "You MUST now call an APPLY tool (e.g. apply_add, apply_replace, "
+            "apply_remove, apply_swap, apply_add_char, apply_verify_wrap, etc.) "
+            "using the targets from your previous find call. "
+            "Do NOT call another find tool — call an apply tool immediately."
+        )
+        prior_messages = agent_result.get("messages", agent_messages)
+        try:
+            nudge_agent = create_react_agent(init_chat_model(), attack_tools)
+            await nudge_agent.ainvoke(
+                {"messages": prior_messages + [HumanMessage(content=nudge)]},
+                config={
+                    "configurable": {"thread_id": str(uuid.uuid4())},
+                    "recursion_limit": 4,
+                },
+            )
+        except (GraphRecursionError, Exception):
+            pass
 
     # ----------------------------------------------------------------
     # Step 3: ATTACK VLA rollout (perturbed input)

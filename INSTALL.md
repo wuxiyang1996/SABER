@@ -204,11 +204,16 @@ ART (openpipe-art 0.5.9) targets vLLM ≥ 0.16 APIs that don't exist in vLLM 0.1
 python scripts/apply_vllm_patches.py
 ```
 
-The script applies three patches (see **README.md** → "Required patches" for details):
+The script applies eight patches (see **README.md** → "Required patches" for details):
 
 1. **`pause_generation` / `resume_generation` stubs** in `vllm/v1/engine/async_llm.py`
-2. **`tool_parsers` import path** fix in `art/vllm/patches.py`
-3. **sleep/wake via native vLLM pipeline** in `art/unsloth/service.py`
+2. **sleep/wake via native vLLM pipeline** in `art/unsloth/service.py`
+3. **`tool_parsers` import path** fix in `art/vllm/patches.py`
+4. **training_device model placement** in `art/unsloth/service.py` (split-GPU)
+5. **split-GPU sleep/wake bypass** in `art/unsloth/service.py`
+6. **training_device forwarding** in `art/dev/get_model_config.py`
+7. **Clear fake `is_loaded_in_8bit` flag** in `art/unsloth/service.py` — Unsloth sets this unconditionally to block DDP; causes accelerate `ValueError` in split-GPU mode
+8. **Clear fake quant flag after `for_training()`** in `unsloth_compiled_cache/UnslothGRPOTrainer.py` — Unsloth re-sets the flag on every training call
 
 Run with `--check` for a dry run that reports patch status without modifying anything.
 
@@ -266,6 +271,7 @@ See **RUN.md** for more options and troubleshooting.
 | `model-service` killed by signal 6 / `std::bad_alloc` | `torchcodec` 0.5 incompatible with PyTorch 2.9+ | `pip install --upgrade torchcodec` (need ≥0.6). |
 | `ModuleNotFoundError: No module named 'vllm.tool_parsers'` | ART targets vLLM ≥0.16 import paths | Run `python scripts/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
 | `EngineDeadError` during training | ART's `run_on_workers` bypasses vLLM EngineCore | Run `python scripts/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
+| `ValueError: ...loaded in 8-bit or 4-bit precision on a different device` | Unsloth sets `is_loaded_in_8bit=True` on all models (even bf16) to block DDP; accelerate detects device mismatch in split-GPU mode | Run `python scripts/apply_vllm_patches.py` (patches 7 & 8) — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
 
 ---
 
