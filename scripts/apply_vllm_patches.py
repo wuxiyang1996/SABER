@@ -2,7 +2,7 @@
 """
 Apply ART 0.5.x ↔ vLLM 0.11.x compatibility patches.
 
-Four patches:
+Five patches:
   1. Add pause_generation / resume_generation stubs to AsyncLLM
      (ART calls them; vLLM < 0.16 does not have them).
   2. Replace run_on_workers(do_sleep/do_wake_up) with native
@@ -13,6 +13,9 @@ Four patches:
   3. Fix tool_parsers import path in ART's patches.py
      (vLLM 0.11 has it under vllm.entrypoints.openai.tool_parsers,
       not vllm.tool_parsers).
+  4. In UnslothService._state: if config has "training_device", move
+     model and peft_model to that device so inference (vLLM) and
+     training (Unsloth) can use different GPUs (e.g. --attack_gpus 2,3).
 
 Usage:
     python scripts/apply_vllm_patches.py          # auto-detect site-packages
@@ -92,9 +95,9 @@ _WAKE_UP_OOM_FIX_BLOCK = """    import torch
         if isinstance(wake_err, EngineDeadError):
             raise RuntimeError(
                 "vLLM EngineCore died during training (often OOM or worker crash). "
-                "Restart with: python train_vla.py --resume . To reduce risk set "
-                "ART_PER_DEVICE_TRAIN_BATCH_SIZE=1 (uses less GPU memory during training), "
-                "ensure sufficient RAM for weight offload, or check dmesg for OOM killer."
+                "Restart with: python train_vla.py --resume . "
+                "Lower --gpu_memory_utilization (e.g. 0.60) to leave more headroom, "
+                "or check dmesg for OOM killer."
             ) from wake_err
         raise
 """
@@ -211,6 +214,51 @@ def patch_tool_parser_import(sp: str, *, dry_run: bool = False) -> bool:
     return True
 
 
+# Block inserted before "return UnslothState(" so Unsloth training can use a different GPU.
+_TRAINING_DEVICE_BLOCK = """        training_device = self.config.get("training_device")
+        if training_device:
+            model = model.to(training_device)
+            peft_model = peft_model.to(training_device)
+
+"""
+
+
+def patch_unsloth_training_device(sp: str, *, dry_run: bool = False) -> bool:
+    """Patch 4: in UnslothService._state, move model/peft_model to config['training_device'] when set."""
+    path = os.path.join(sp, "art", "unsloth", "service.py")
+    if not os.path.isfile(path):
+        print(f"[SKIP] {path} not found (ART not installed?)")
+        return False
+
+    with open(path) as f:
+        src = f.read()
+
+    anchor = "        trainer._prepare_inputs = _async_prepare_inputs\n\n        return UnslothState("
+    if _TRAINING_DEVICE_BLOCK.strip() in src and "training_device = self.config.get" in src:
+        print("[OK]   Patch 4: training_device placement already present")
+        return False
+
+    if anchor not in src:
+        print("[OK]   Patch 4: anchor not found (ART structure changed?)")
+        return False
+
+    if dry_run:
+        print("[NEED] Patch 4: add training_device placement in UnslothService._state")
+        return True
+
+    patched = src.replace(
+        anchor,
+        "        trainer._prepare_inputs = _async_prepare_inputs\n\n"
+        + _TRAINING_DEVICE_BLOCK
+        + "\n        return UnslothState(",
+        1,
+    )
+    with open(path, "w") as f:
+        f.write(patched)
+    print(f"[DONE] Patch 4: added training_device placement in {path}")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Dry-run: report status only")
@@ -222,15 +270,16 @@ def main() -> None:
     p1 = patch_async_llm(sp, dry_run=args.check)
     p2 = patch_unsloth_service(sp, dry_run=args.check)
     p3 = patch_tool_parser_import(sp, dry_run=args.check)
+    p4 = patch_unsloth_training_device(sp, dry_run=args.check)
 
     if args.check:
-        if p1 or p2 or p3:
+        if p1 or p2 or p3 or p4:
             print("\nRun without --check to apply patches.")
             sys.exit(1)
         else:
             print("\nAll patches already applied.")
     else:
-        if not p1 and not p2 and not p3:
+        if not p1 and not p2 and not p3 and not p4:
             print("\nNothing to patch.")
 
 

@@ -666,9 +666,16 @@ def prompt_attack_pipeline(text: str, attack_type: str) -> dict:
         dict from the corresponding find_* function.
     """
     if attack_type not in PROMPT_FIND_REGISTRY:
+        _TOKEN_TYPES = {"replace", "remove", "add", "swap_attribute"}
+        _CHAR_TYPES = {"add_char", "remove_char", "alter_char", "swap_chars", "flip_case"}
+        hint = ""
+        if attack_type in _TOKEN_TYPES:
+            hint = f" Did you mean find_targets(text, {attack_type!r})?"
+        elif attack_type in _CHAR_TYPES:
+            hint = f" Did you mean find_char_targets(text, {attack_type!r})?"
         raise ValueError(
             f"Unknown prompt attack_type: {attack_type!r}. "
-            f"Choose from: {list(PROMPT_FIND_REGISTRY.keys())}"
+            f"Choose from: {list(PROMPT_FIND_REGISTRY.keys())}.{hint}"
         )
     return PROMPT_FIND_REGISTRY[attack_type](text)
 

@@ -19,11 +19,10 @@ import sys
 import math
 
 # Limit JAX GPU memory BEFORE any JAX/openpi imports.
-# Default lowered to 0.25 so that vLLM (attack agent) can coexist on the
-# same GPU.  train_vla.py sets this env-var before imports; the value here
-# is only a fallback for standalone usage.
+# train_vla.py sets this env-var before imports (0.45 for A100-80GB);
+# the value here is only a fallback for standalone usage.
 if "XLA_PYTHON_CLIENT_MEM_FRACTION" not in os.environ:
-    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.25"
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.40"
 
 import numpy as np
 

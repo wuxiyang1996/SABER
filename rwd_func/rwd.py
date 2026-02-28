@@ -378,8 +378,8 @@ class ActionInflationReward(RewardComponent):
     """Did the attack cause the VLA to take more steps?
 
     When steps_attack >= steps_baseline:
-      reward = clamp((steps_attack / steps_baseline - 1) / inflation_cap, 0, 1)
-    Default inflation_cap=1.0: 2x steps → reward=1.0.
+      reward = min((ratio - 1) / inflation_cap, 2.0)  — upper bound 2.0 so 2x/3x get strong reward.
+    Default inflation_cap=0.5: 1.2x → 0.4,  1.3x → 0.6,  1.5x → 1.0,  2x → 2.0,  3x → 2.0 (capped).
     When steps_attack < steps_baseline (both succeed):
       reward = -fewer_steps_penalty * (1 - ratio), clamped to [-max_fewer_penalty, 0]
     so the agent gets a clear signal that fewer steps than baseline is bad.
@@ -394,7 +394,7 @@ class ActionInflationReward(RewardComponent):
 
     def __init__(
         self,
-        inflation_cap: float = 1.0,
+        inflation_cap: float = 0.5,
         fewer_steps_penalty: float = 0.5,
         max_fewer_penalty: float = 0.5,
     ):
@@ -419,9 +419,9 @@ class ActionInflationReward(RewardComponent):
         if not task_gated:
             reward = 0.0
         elif ratio >= 1.0:
-            # More steps (or same): reward in [0, 1]
+            # More steps (or same): reward in [0, 2.0] so 2x/3x get strong signal
             raw = ratio - 1.0
-            reward = min(raw / self.inflation_cap, 1.0)
+            reward = min(raw / self.inflation_cap, 2.0)
             if attack.timeout and not baseline.timeout:
                 reward = max(reward, 0.8)
         else:
@@ -1281,8 +1281,8 @@ class ObjectiveReward:
     def __init__(
         self,
         objective: AttackObjective,
-        stealth_weight: float = 0.3,
-        reward_range: Tuple[float, float] = (-1.0, 1.5),
+        stealth_weight: float = 0.1,
+        reward_range: Tuple[float, float] = (-1.0, 2.0),
         no_attack_penalty: float = -1.0,
         short_trajectory_penalty: float = 0.2,
         short_trajectory_ratio_threshold: float = 0.5,
@@ -1443,7 +1443,7 @@ class ObjectiveReward:
 
 def make_objective_reward(
     objective: AttackObjective | str,
-    stealth_weight: float = 0.3,
+    stealth_weight: float = 0.1,
     no_attack_penalty: float = -1.0,
     short_trajectory_penalty: float = 0.2,
     short_trajectory_ratio_threshold: float = 0.5,

@@ -698,9 +698,17 @@ def char_attack_pipeline(text: str, attack_type: str) -> dict:
         "flip_case": find_flip_case_targets,
     }
     if attack_type not in find_fns:
+        _TOKEN_TYPES = {"replace", "remove", "add", "swap_attribute"}
+        _PROMPT_TYPES = {"verify_wrap", "decompose_wrap", "uncertainty_clause",
+                         "constraint_stack", "structure_inject", "objective_inject"}
+        hint = ""
+        if attack_type in _TOKEN_TYPES:
+            hint = f" Did you mean find_targets(text, {attack_type!r})?"
+        elif attack_type in _PROMPT_TYPES:
+            hint = f" Did you mean find_prompt_targets(text, {attack_type!r})?"
         raise ValueError(
             f"Unknown attack_type: {attack_type!r}. "
-            f"Choose from: {list(find_fns.keys())}"
+            f"Choose from: {list(find_fns.keys())}.{hint}"
         )
     return find_fns[attack_type](text)
 

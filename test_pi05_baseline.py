@@ -2,7 +2,7 @@
 import sys, os, collections, time, pathlib
 import numpy as np
 
-os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.30"
+os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.45"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "openpi/src"))

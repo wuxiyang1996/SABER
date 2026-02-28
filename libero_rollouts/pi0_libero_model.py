@@ -24,7 +24,7 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _FRAMEWORK_ROOT = os.path.realpath(os.path.join(_THIS_DIR, ".."))
 
 if "XLA_PYTHON_CLIENT_MEM_FRACTION" not in os.environ:
-    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.25"
+    os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.40"
 
 # Ensure libero_rollouts and openpi are on path (same as pi05)
 _LIBERO_ROLLOUTS = os.path.join(_FRAMEWORK_ROOT, "libero_rollouts")

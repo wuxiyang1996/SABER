@@ -247,7 +247,7 @@ class VLAAttackScenario:
     max_steps: Optional[int] = None             # if set, overrides suite default
     max_turns: int = MAX_TURNS                  # ReAct tool-call rounds (more = room for multi-tool)
     replan_steps: int = REPLAN_STEPS            # VLA actions per inference chunk (higher = fewer model calls)
-    stealth_weight: float = 0.3                 # λ for P_stealth
+    stealth_weight: float = 0.1                 # λ for P_stealth
     no_attack_penalty: float = -1.0             # fixed reward when no attack tool is used
     short_trajectory_penalty: float = 0.2       # extra penalty when attack trajectory much shorter than baseline
     short_trajectory_ratio_threshold: float = 0.5  # apply when attack_steps < baseline_steps * this
@@ -475,14 +475,27 @@ def build_vla_attack_tools(
     # =================================================================
     # TOKEN tools
     # =================================================================
+    _CHAR_TYPES = {"add_char", "remove_char", "alter_char", "swap_chars", "flip_case"}
+    _PROMPT_TYPES = {"verify_wrap", "decompose_wrap", "uncertainty_clause",
+                     "constraint_stack", "structure_inject", "objective_inject"}
+
     if ToolSet.TOKEN in tool_sets:
         @tool
         def find_targets(text: str, attack_type: str) -> str:
             """FIND phase for TOKEN-LEVEL attacks.
             Returns a numbered token list and a QA prompt.
             attack_type: 'replace', 'remove', 'add', or 'swap_attribute'."""
+            if attack_type in _CHAR_TYPES and ToolSet.CHAR in tool_sets:
+                state.record_call("find_char_targets")
+                return _truncate_result(_char.char_attack_pipeline(text, attack_type))
+            if attack_type in _PROMPT_TYPES and ToolSet.PROMPT in tool_sets:
+                state.record_call("find_prompt_targets")
+                return _truncate_result(_prompt.prompt_attack_pipeline(text, attack_type))
             state.record_call("find_targets")
-            return _truncate_result(_tok.attack_pipeline(text, attack_type))
+            try:
+                return _truncate_result(_tok.attack_pipeline(text, attack_type))
+            except ValueError as e:
+                return str(e)
 
         @tool
         def apply_replace(
@@ -547,6 +560,8 @@ def build_vla_attack_tools(
     # =================================================================
     # CHAR tools
     # =================================================================
+    _TOKEN_TYPES = {"replace", "remove", "add", "swap_attribute"}
+
     if ToolSet.CHAR in tool_sets:
         @tool
         def find_char_targets(text: str, attack_type: str) -> str:
@@ -554,8 +569,17 @@ def build_vla_attack_tools(
             Returns a word list with character positions and a QA prompt.
             attack_type: 'add_char', 'remove_char', 'alter_char',
             'swap_chars', or 'flip_case'."""
+            if attack_type in _TOKEN_TYPES and ToolSet.TOKEN in tool_sets:
+                state.record_call("find_targets")
+                return _truncate_result(_tok.attack_pipeline(text, attack_type))
+            if attack_type in _PROMPT_TYPES and ToolSet.PROMPT in tool_sets:
+                state.record_call("find_prompt_targets")
+                return _truncate_result(_prompt.prompt_attack_pipeline(text, attack_type))
             state.record_call("find_char_targets")
-            return _truncate_result(_char.char_attack_pipeline(text, attack_type))
+            try:
+                return _truncate_result(_char.char_attack_pipeline(text, attack_type))
+            except ValueError as e:
+                return str(e)
 
         @tool
         def apply_add_char(
@@ -647,6 +671,12 @@ def build_vla_attack_tools(
             Returns a QA prompt for multi-token perturbations.
             attack_type: 'verify_wrap', 'decompose_wrap', 'uncertainty_clause',
             'constraint_stack', 'structure_inject', or 'objective_inject'."""
+            if attack_type in _TOKEN_TYPES and ToolSet.TOKEN in tool_sets:
+                state.record_call("find_targets")
+                return _truncate_result(_tok.attack_pipeline(text, attack_type))
+            if attack_type in _CHAR_TYPES and ToolSet.CHAR in tool_sets:
+                state.record_call("find_char_targets")
+                return _truncate_result(_char.char_attack_pipeline(text, attack_type))
             state.record_call("find_prompt_targets")
             return _truncate_result(_prompt.prompt_attack_pipeline(text, attack_type))
 

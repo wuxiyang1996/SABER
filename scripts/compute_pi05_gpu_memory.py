@@ -88,7 +88,7 @@ def main() -> int:
             print(f"Delta (Pi0.5 load + inference): {delta} MiB ({delta / 1024:.2f} GiB)")
 
     print("\nDocumented estimate (train_vla.py): Pi0.5 inference ~9 GiB.")
-    print("Use XLA_PYTHON_CLIENT_MEM_FRACTION=0.30 when sharing GPU with vLLM (attack agent).")
+    print("Use XLA_PYTHON_CLIENT_MEM_FRACTION=0.45 (VLA GPUs are dedicated, not shared with vLLM).")
     return 0
 
 

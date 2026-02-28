@@ -352,7 +352,7 @@ LIBERO's `step()` method overrode Robosuite's `done` flag inappropriately. Added
 
 **Fix 7 — `EngineDeadError` after training (wake_up fails)**
 
-If the vLLM EngineCore process dies during the training phase (e.g. OOM when Unsloth uses the GPU, or worker crash), `llm.wake_up()` raises `EngineDeadError`. In `art/unsloth/service.py`: (1) Before `wake_up()`, call `torch.cuda.synchronize()`, `gc_and_empty_cuda_cache(5)`, and `await asyncio.sleep(2.0)` so GPU memory is fully released before workers restore weights. (2) Catch `EngineDeadError` and re-raise as `RuntimeError` with a message suggesting restart with `--resume`. **Reduce risk:** set `ART_PER_DEVICE_TRAIN_BATCH_SIZE=1` (ART reads this in `get_model_config`) to use less GPU memory during training; ensure sufficient RAM for weight offload; check `dmesg` for OOM killer.
+If the vLLM EngineCore process dies during the training phase (e.g. OOM when Unsloth uses the GPU, or worker crash), `llm.wake_up()` raises `EngineDeadError`. In `art/unsloth/service.py`: (1) Before `wake_up()`, call `torch.cuda.synchronize()`, `gc_and_empty_cuda_cache(5)`, and `await asyncio.sleep(2.0)` so GPU memory is fully released before workers restore weights. (2) Catch `EngineDeadError` and re-raise as `RuntimeError` with a message suggesting restart with `--resume`. **Reduce risk:** lower `--gpu_memory_utilization` (e.g. 0.60) to leave more headroom for the sleep/wake cycle; check `dmesg` for OOM killer. On A100-80GB with Qwen2.5-3B (4-bit + LoRA r=8), training needs <8 GB — OOM during wake-up is rare.
 
 ## Quick Evaluation
 

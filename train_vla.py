@@ -65,8 +65,10 @@ warnings.filterwarnings(
 # ---- GPU layout: resolve early so CUDA_VISIBLE_DEVICES is set before
 #      any CUDA / PyTorch / JAX import.
 #
-#   GPU 0,1,2 (default, or --vla_gpus) →  Pi0.5 VLA model(s) — rollouts (JAX)
-#   GPU 3 (default, or --attack_gpus) →  Attack agent training (vLLM / ART)
+#   GPU 0,1 (or 0,1,2) →  Pi0.5 VLA model(s) — rollouts (JAX)
+#   GPU 2 and/or 3 →  Attack agent: vLLM inference + Unsloth training (ART).
+#   Optional 4-GPU layout: --vla_gpus 0,1 --attack_gpus 2,3 uses GPU 2 for
+#   vLLM inference and GPU 3 for Unsloth training (requires apply_vllm_patches).
 #
 # On SLURM, CUDA_VISIBLE_DEVICES is pre-set to *all* allocated GPUs
 # (e.g. "0,1,2,3" or "4,5,6,7").  JAX initialises on every visible GPU,
@@ -134,10 +136,11 @@ _VLA_GPUS_PHYSICAL = ",".join(
 )
 os.environ["CUDA_VISIBLE_DEVICES"] = _VLA_GPUS_PHYSICAL
 
-# JAX memory settings — don't pre-allocate; cap at 30% per GPU (~14 GiB on
-# 48 GiB L40S).  Pi0.5 inference needs ~9 GiB; 0.30 leaves room for vLLM
-# (attack agent) if sharing GPUs.  Override with env var if needed.
-os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.30")
+# JAX memory settings — don't pre-allocate; cap at 45% per GPU (~36 GiB on
+# A100-80GB).  Pi0.5 inference + weights need ~20–25 GiB.  VLA GPUs are
+# dedicated (CUDA_VISIBLE_DEVICES separates them from attack GPU), so no
+# need to share with vLLM.  Override with env var if needed.
+os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.45")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 # ---- Model / data cache directory --------------------------------------
@@ -164,6 +167,13 @@ try:
     os.makedirs(_ART_OUTPUT_ROOT, exist_ok=True)
 except OSError:
     pass
+
+# ---- ART / Unsloth training notes ------------------------------------------
+# Unsloth's GRPO requires batch * grad_accum * world_size ≥ num_generations (2).
+# ART defaults to batch=2 which satisfies the constraint.
+# vLLM uses enable_sleep_mode=True by default: it frees the KV cache during
+# training, so nearly the full GPU is available for the LoRA gradient update.
+# On A100-80GB with Qwen2.5-3B (4-bit + LoRA r=8), training needs <8 GB.
 
 # ---- Headless rendering (must be set before MuJoCo / PyOpenGL import) --
 os.environ.setdefault("MUJOCO_GL", "egl")
@@ -225,7 +235,7 @@ DEFAULT_EVAL_EPISODES_PER_TASK = 5   # init states per test task (12 tasks × 5 
 DEFAULT_EPISODES_PER_TASK = 1        # 1 init state per task; diversity comes from 28 tasks
 DEFAULT_TRAJECTORIES_PER_GROUP = 8   # GRPO group size; matches 8 rollout workers per GPU
 DEFAULT_GROUPS_PER_STEP = 4          # groups gathered before one train step
-DEFAULT_NUM_EPOCHS = 3               # 3 passes over 28 scenarios = 21 training steps
+DEFAULT_NUM_EPOCHS = 10              # 10 passes over 28 scenarios = 70 training steps
 DEFAULT_REPLAN_STEPS = 5             # matches official OpenPI LIBERO default
 DEFAULT_SEED = 42                    # match eval.run_libero_eval default for comparable baseline success
 DEFAULT_LEARNING_RATE = 1e-5
@@ -336,6 +346,7 @@ async def train(args: argparse.Namespace) -> None:
             "project_name": args.project_name,
             "gpus": args.attack_gpus,
             "gpu_memory_utilization": args.gpu_memory_utilization,
+            **({"inference_gpu": args.attack_gpus.split(",")[0].strip(), "training_gpu": args.attack_gpus.split(",")[1].strip()} if len(args.attack_gpus.split(",")) == 2 else {}),
         },
         "training": {
             "objective": args.objective,
@@ -544,10 +555,16 @@ async def train(args: argparse.Namespace) -> None:
     # --- ART model setup (vLLM on attack GPU(s)) ----------------------
     # Count how many GPUs were assigned to the attack agent
     n_attack_gpus = len(attack_gpus.split(","))
-    logger.info(
-        "Configuring attack model: %d GPU(s), mem_util=%.2f",
-        n_attack_gpus, args.gpu_memory_utilization,
-    )
+    if n_attack_gpus == 2:
+        logger.info(
+            "Configuring attack model: 2 GPU(s) (inference on first, training on second), mem_util=%.2f",
+            args.gpu_memory_utilization,
+        )
+    else:
+        logger.info(
+            "Configuring attack model: %d GPU(s), mem_util=%.2f",
+            n_attack_gpus, args.gpu_memory_utilization,
+        )
 
     # gpu_memory_utilization goes into engine_args (the vLLM
     # AsyncEngineArgs), NOT init_args (unsloth model loader).
@@ -557,20 +574,26 @@ async def train(args: argparse.Namespace) -> None:
     # tensor_parallel_size is left at 1 (default).  So vLLM uses a single
     # GPU from the attack set; when --attack_gpus has multiple IDs, the
     # subprocess sees them (CUDA_VISIBLE_DEVICES) but vLLM uses the first.
-    # Qwen2.5-3B (~6 GiB) fits on one L40S.  TP > 1 triggers vLLM
-    # multiprocessing which hits a pydantic-core pickling bug.
+    # With two attack GPUs (e.g. 2,3), we pin vLLM to cuda:0 and Unsloth
+    # training to cuda:1 to split inference vs training (requires ART patch).
+    # Qwen2.5-3B (~6 GiB) fits easily on one A100-80GB.  TP > 1 triggers
+    # vLLM multiprocessing which hits a pydantic-core pickling bug.
+    engine_args_dict = dict(
+        gpu_memory_utilization=args.gpu_memory_utilization,
+    )
+    if n_attack_gpus == 2:
+        engine_args_dict["device"] = "cuda:0"  # vLLM on first visible attack GPU
+    internal_config = dict(
+        init_args=art.dev.InitArgs(max_seq_length=4096),
+        engine_args=art.dev.EngineArgs(**engine_args_dict),
+    )
+    if n_attack_gpus == 2:
+        internal_config["training_device"] = "cuda:1"  # Unsloth on second attack GPU
     attack_model = art.TrainableModel(
         name=args.model_name,
         project=args.project_name,
         base_model=args.base_model,
-        _internal_config=art.dev.InternalModelConfig(
-            init_args=art.dev.InitArgs(
-                max_seq_length=4096,
-            ),
-            engine_args=art.dev.EngineArgs(
-                gpu_memory_utilization=args.gpu_memory_utilization,
-            ),
-        ),
+        _internal_config=internal_config,
     )
 
     # --- Patch model-service subprocess to capture stdout/stderr -----
@@ -985,17 +1008,19 @@ def main():
     parser.add_argument(
         "--attack_gpus", type=str, default=_ATTACK_GPUS,
         help=(
-            "GPU index (or comma-separated list) for the vLLM attack agent.  "
-            "Default: all visible GPUs except --vla_gpus (e.g. '1,2,3' on 4 GPUs).  "
-            "vLLM runs with tensor_parallel_size=1, so only the first GPU in this list is used."
+            "GPU index (or comma-separated list) for the attack agent.  "
+            "Default: all visible GPUs except --vla_gpus (e.g. '3' or '2,3' on 4 GPUs).  "
+            "With one GPU: vLLM inference and Unsloth training share it.  "
+            "With two (e.g. '2,3'): first GPU = vLLM inference, second = Unsloth training "
+            "(requires scripts/apply_vllm_patches.py)."
         ),
     )
     parser.add_argument(
-        "--gpu_memory_utilization", type=float, default=0.65,
+        "--gpu_memory_utilization", type=float, default=0.50,
         help=(
-            "Fraction of GPU memory vLLM may use on each attack GPU.  "
-            "If the model-service subprocess is killed (e.g. signal 6 / OOM), try 0.5 or 0.45; "
-            "for single-GPU (VLA and attack on same GPU) use 0.4–0.5."
+            "Fraction of GPU memory vLLM may use for KV cache on each attack GPU.  "
+            "Default 0.50 reduces OOM risk; 0.55 is the safe maximum for 21+ step runs "
+            "on A100-80GB.  Values > 0.60 are capped at 0.60 (0.65+ risk EngineCore crashes)."
         ),
     )
 
@@ -1053,6 +1078,15 @@ def main():
         ),
     )
     args = parser.parse_args()
+
+    # Cap vLLM memory to reduce OOM risk (sleep/wake fragmentation, training spikes)
+    _MAX_GPU_MEM_UTIL = 0.60
+    if args.gpu_memory_utilization > _MAX_GPU_MEM_UTIL:
+        logger.warning(
+            "Capping gpu_memory_utilization %.2f → %.2f to reduce OOM risk.",
+            args.gpu_memory_utilization, _MAX_GPU_MEM_UTIL,
+        )
+        args.gpu_memory_utilization = _MAX_GPU_MEM_UTIL
 
     try:
         asyncio.run(train(args))
