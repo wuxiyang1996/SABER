@@ -204,7 +204,7 @@ ART (openpipe-art 0.5.9) targets vLLM ≥ 0.16 APIs that don't exist in vLLM 0.1
 python scripts/apply_vllm_patches.py
 ```
 
-The script applies eight patches (see **README.md** → "Required patches" for details):
+The script applies seven patches (see **README.md** → "Required patches" for details):
 
 1. **`pause_generation` / `resume_generation` stubs** in `vllm/v1/engine/async_llm.py`
 2. **sleep/wake via native vLLM pipeline** in `art/unsloth/service.py`
@@ -212,8 +212,7 @@ The script applies eight patches (see **README.md** → "Required patches" for d
 4. **training_device model placement** in `art/unsloth/service.py` (split-GPU)
 5. **split-GPU sleep/wake bypass** in `art/unsloth/service.py`
 6. **training_device forwarding** in `art/dev/get_model_config.py`
-7. **Clear fake `is_loaded_in_8bit` flag** in `art/unsloth/service.py` — Unsloth sets this unconditionally to block DDP; causes accelerate `ValueError` in split-GPU mode
-8. **Clear fake quant flag after `for_training()`** in `unsloth_compiled_cache/UnslothGRPOTrainer.py` — Unsloth re-sets the flag on every training call
+7. **Replace accelerate's flag-based quantization check with actual bnb layer scan** in `accelerate/accelerator.py` — Unsloth sets `is_loaded_in_8bit=True` on ALL models (even bf16) to block DDP; this makes accelerate's `prepare_model()` raise `ValueError` on device mismatch in split-GPU mode. The patch checks for real `bitsandbytes.nn.Linear4bit`/`Linear8bitLt` layers instead of trusting the flag. (Other approaches fail: instance monkey-patching is overwritten by `for_training()` re-assigning itself via `functools.partial`; patching the compiled `UnslothGRPOTrainer.py` is overwritten by Unsloth's compiler on every import.)
 
 Run with `--check` for a dry run that reports patch status without modifying anything.
 

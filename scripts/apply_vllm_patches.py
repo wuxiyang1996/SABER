@@ -2,7 +2,7 @@
 """
 Apply ART 0.5.x ↔ vLLM 0.11.x compatibility patches.
 
-Eight patches:
+Seven patches:
   1. Add pause_generation / resume_generation stubs to AsyncLLM
      (ART calls them; vLLM < 0.16 does not have them).
   2. Replace run_on_workers(do_sleep/do_wake_up) with native
@@ -19,12 +19,18 @@ Eight patches:
   5. In UnslothService.train(): when training_device is set (2-GPU split),
      skip vLLM sleep/wake entirely. Training runs on a separate GPU so
      vLLM's memory is never touched — eliminates OOM from fragmentation.
-  7. Clear Unsloth's fake is_loaded_in_8bit flag in UnslothService._state
-     after model loading. Unsloth sets this unconditionally to prevent DDP;
-     it causes accelerate to raise ValueError on device mismatch in split-GPU.
-  8. Clear the same flag in the compiled UnslothGRPOTrainer's
-     prepare_for_training_mode wrapper, which runs after Unsloth's
-     for_training() re-sets it on every training call.
+  6. Preserve training_device through get_model_config() in ART's
+     dev/get_model_config.py (it rebuilds InternalModelConfig from scratch
+     and would drop the key otherwise).
+  7. Patch accelerate's prepare_model() to check for ACTUAL bitsandbytes
+     quantized layers instead of trusting the is_loaded_in_8bit flag.
+     Unsloth unconditionally sets is_loaded_in_8bit=True on ALL models
+     (even bf16) to prevent DDP wrapping.  This makes accelerate raise
+     ValueError when hf_device_map points to a non-default device (split-
+     GPU mode).  Instance-level monkey-patching of for_training() doesn't
+     work because Unsloth re-assigns the method on every call.  Patching
+     the compiled UnslothGRPOTrainer.py also fails because Unsloth's
+     compiler regenerates it on every import.
 
 Usage:
     python scripts/apply_vllm_patches.py          # auto-detect site-packages
@@ -481,131 +487,66 @@ def patch_get_model_config_training_device(sp: str, *, dry_run: bool = False) ->
     return True
 
 
-# Block inserted after unsloth.FastLanguageModel.from_pretrained() to clear fake quant flags.
-_CLEAR_QUANT_FLAGS_BLOCK = """\
+def patch_accelerate_bnb_check(sp: str, *, dry_run: bool = False) -> bool:
+    """Patch 7: fix accelerate's quantization device check.
 
-        # Unsloth unconditionally sets is_loaded_in_8bit=True to prevent
-        # DDP wrapping, even when the model is actually bf16.  This causes
-        # accelerate's prepare_model() to raise a ValueError when the
-        # model's hf_device_map device differs from accelerate's device
-        # (common in split-GPU mode).  Clear the flag when the model is
-        # not truly quantised — we don't use DDP so the flag is not needed.
-        if not init_args.get("load_in_4bit") and not init_args.get("load_in_8bit"):
-            m = model
-            while m is not None:
-                if hasattr(m, "is_loaded_in_8bit"):
-                    m.is_loaded_in_8bit = False
-                if hasattr(m, "is_loaded_in_4bit"):
-                    m.is_loaded_in_4bit = False
-                m = getattr(m, "model", None)
-"""
+    accelerate's prepare_model() checks model.is_loaded_in_8bit / is_loaded_in_4bit
+    flags to decide whether to enforce device placement rules.  Unsloth sets
+    is_loaded_in_8bit=True on ALL models (even bf16) to prevent DDP wrapping,
+    causing a false-positive ValueError in split-GPU mode.
 
+    This patch replaces the flag-based check with an actual scan for
+    bitsandbytes quantized layers (Linear4bit / Linear8bitLt).
 
-def patch_clear_fake_quant_flags(sp: str, *, dry_run: bool = False) -> bool:
-    """Patch 7: clear Unsloth's fake is_loaded_in_8bit after model loading in service.py.
-
-    Unsloth unconditionally sets model.is_loaded_in_8bit = True (even for bf16
-    models) to prevent DDP wrapping.  When hf_device_map points to a non-default
-    device (split-GPU), accelerate's prepare_model() raises:
-        ValueError: You can't train a model that has been loaded in 8-bit or
-        4-bit precision on a different device than the one you're training on.
+    Why other approaches fail:
+    - Monkey-patching model.for_training(): Unsloth re-assigns the method
+      via functools.partial on every call (llama.py:3188).
+    - Patching UnslothGRPOTrainer.py: Unsloth's compiler detects content
+      changes and regenerates the file on every import.
+    - Clearing the flag in service.py: for_training() re-sets it before
+      accelerator.prepare() runs.
     """
-    path = os.path.join(sp, "art", "unsloth", "service.py")
+    path = os.path.join(sp, "accelerate", "accelerator.py")
     if not os.path.isfile(path):
-        print(f"[SKIP] {path} not found (ART not installed?)")
+        print(f"[SKIP] {path} not found (accelerate not installed?)")
         return False
 
     with open(path) as f:
         src = f.read()
 
-    if "is_loaded_in_8bit = False" in src:
-        print("[OK]   Patch 7: fake quant flag clearing already present")
+    if "_has_bnb_layers" in src:
+        print("[OK]   Patch 7: accelerate bnb layer check already present")
         return False
 
-    anchor = (
-        "            unsloth.FastLanguageModel.from_pretrained(**init_args),\n"
-        "        )\n\n"
-        "        # Initialize PEFT model"
+    old_check = (
+        '        if (getattr(model, "is_loaded_in_8bit", False) or getattr(model, "is_loaded_in_4bit", False)) and getattr(\n'
+        '            model, "hf_device_map", False\n'
+        "        ):"
     )
-    if anchor not in src:
-        print("[SKIP] Patch 7: anchor not found (ART structure changed?)")
+    if old_check not in src:
+        print("[SKIP] Patch 7: anchor not found in accelerate (version changed?)")
         return False
 
     if dry_run:
-        print("[NEED] Patch 7: clear fake is_loaded_in_8bit after model loading")
+        print("[NEED] Patch 7: replace flag-based quant check with actual bnb layer scan")
         return True
 
-    patched = src.replace(
-        anchor,
-        "            unsloth.FastLanguageModel.from_pretrained(**init_args),\n"
-        "        )\n"
-        + _CLEAR_QUANT_FLAGS_BLOCK
-        + "\n        # Initialize PEFT model",
-        1,
+    new_check = (
+        "        # Check for ACTUAL bitsandbytes quantized layers, not just flags.\n"
+        "        # Unsloth sets is_loaded_in_8bit=True on all models (even bf16) to\n"
+        "        # prevent DDP wrapping, which causes false positives here.\n"
+        "        def _has_bnb_layers(m):\n"
+        "            try:\n"
+        "                import bitsandbytes as bnb\n"
+        "                return any(isinstance(mod, (bnb.nn.Linear4bit, bnb.nn.Linear8bitLt)) for mod in m.modules())\n"
+        "            except (ImportError, AttributeError):\n"
+        "                return False\n"
+        '        if _has_bnb_layers(model) and getattr(model, "hf_device_map", False):'
     )
+    patched = src.replace(old_check, new_check, 1)
     with open(path, "w") as f:
         f.write(patched)
-    print(f"[DONE] Patch 7: clear fake quant flags in {path}")
-    return True
-
-
-_TRAINER_CLEAR_BLOCK = """\
-        # Unsloth's for_training() unconditionally sets is_loaded_in_8bit=True
-        # to prevent DDP, but this makes accelerate.prepare_model() raise a
-        # ValueError when hf_device_map points to a non-default device (split-
-        # GPU).  Clear the fake flag — we never use DDP here.
-        _m = getattr(self, 'model', None)
-        while _m is not None:
-            if hasattr(_m, 'is_loaded_in_8bit'):
-                _m.is_loaded_in_8bit = False
-            if hasattr(_m, 'is_loaded_in_4bit'):
-                _m.is_loaded_in_4bit = False
-            _m = getattr(_m, 'model', None)
-"""
-
-
-def patch_trainer_clear_quant_flags(*, dry_run: bool = False) -> bool:
-    """Patch 8: clear fake quant flags in UnslothGRPOTrainer after for_training().
-
-    Unsloth's for_training() re-sets is_loaded_in_8bit=True on every training
-    call.  This patch clears it in the prepare_for_training_mode wrapper right
-    before the actual train() call (which triggers accelerator.prepare()).
-    """
-    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    path = os.path.join(script_dir, "unsloth_compiled_cache", "UnslothGRPOTrainer.py")
-    if not os.path.isfile(path):
-        print(f"[SKIP] {path} not found")
-        return False
-
-    with open(path) as f:
-        src = f.read()
-
-    if "is_loaded_in_8bit = False" in src:
-        print("[OK]   Patch 8: trainer quant flag clearing already present")
-        return False
-
-    anchor = (
-        "            self.model.for_training(use_gradient_checkpointing=use_gc)\n"
-        "        output = f(self, *args, **kwargs)"
-    )
-    if anchor not in src:
-        print("[SKIP] Patch 8: anchor not found in UnslothGRPOTrainer.py")
-        return False
-
-    if dry_run:
-        print("[NEED] Patch 8: clear fake quant flags in trainer after for_training()")
-        return True
-
-    patched = src.replace(
-        anchor,
-        "            self.model.for_training(use_gradient_checkpointing=use_gc)\n"
-        + _TRAINER_CLEAR_BLOCK
-        + "        output = f(self, *args, **kwargs)",
-        1,
-    )
-    with open(path, "w") as f:
-        f.write(patched)
-    print(f"[DONE] Patch 8: clear fake quant flags in {path}")
+    print(f"[DONE] Patch 7: replaced flag-based check with bnb layer scan in {path}")
     return True
 
 
@@ -623,10 +564,9 @@ def main() -> None:
     p4 = patch_unsloth_training_device(sp, dry_run=args.check)
     p5 = patch_split_gpu_sleep_wake(sp, dry_run=args.check)
     p6 = patch_get_model_config_training_device(sp, dry_run=args.check)
-    p7 = patch_clear_fake_quant_flags(sp, dry_run=args.check)
-    p8 = patch_trainer_clear_quant_flags(dry_run=args.check)
+    p7 = patch_accelerate_bnb_check(sp, dry_run=args.check)
 
-    any_needed = p1 or p2 or p3 or p4 or p5 or p6 or p7 or p8
+    any_needed = p1 or p2 or p3 or p4 or p5 or p6 or p7
     if args.check:
         if any_needed:
             print("\nRun without --check to apply patches.")
