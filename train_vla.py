@@ -555,38 +555,45 @@ async def train(args: argparse.Namespace) -> None:
     # --- ART model setup (vLLM on attack GPU(s)) ----------------------
     # Count how many GPUs were assigned to the attack agent
     n_attack_gpus = len(attack_gpus.split(","))
+    _prec = "bf16" if args.bf16 else "bnb-4bit"
     if n_attack_gpus == 2:
         logger.info(
-            "Configuring attack model: 2 GPU(s) (inference on first, training on second), mem_util=%.2f",
-            args.gpu_memory_utilization,
+            "Configuring attack model (%s): 2 GPU(s) (inference on first, training on second), mem_util=%.2f",
+            _prec, args.gpu_memory_utilization,
         )
     else:
         logger.info(
-            "Configuring attack model: %d GPU(s), mem_util=%.2f",
-            n_attack_gpus, args.gpu_memory_utilization,
+            "Configuring attack model (%s): %d GPU(s), mem_util=%.2f",
+            _prec, n_attack_gpus, args.gpu_memory_utilization,
         )
 
     # gpu_memory_utilization goes into engine_args (the vLLM
     # AsyncEngineArgs), NOT init_args (unsloth model loader).
-    # Putting it in init_args caused vLLM to silently use its own
-    # default of 0.9 for gpu_memory_utilization.
-    #
-    # tensor_parallel_size is left at 1 (default).  So vLLM uses a single
-    # GPU from the attack set; when --attack_gpus has multiple IDs, the
-    # subprocess sees them (CUDA_VISIBLE_DEVICES) but vLLM uses the first.
-    # With two attack GPUs (e.g. 2,3), we pin vLLM to cuda:0 and Unsloth
-    # training to cuda:1 to split inference vs training (requires ART patch).
-    # Qwen2.5-3B (~6 GiB) fits easily on one A100-80GB.  TP > 1 triggers
-    # vLLM multiprocessing which hits a pydantic-core pickling bug.
+    # tensor_parallel_size is left at 1 (default).  With two attack GPUs
+    # (e.g. 2,3), we pin vLLM to cuda:0 and Unsloth training to cuda:1
+    # (requires ART patch via scripts/apply_vllm_patches.py).
     engine_args_dict = dict(
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
-    if n_attack_gpus == 2:
-        engine_args_dict["device"] = "cuda:0"  # vLLM on first visible attack GPU
-    internal_config = dict(
-        init_args=art.dev.InitArgs(max_seq_length=4096),
+    init_args = art.dev.InitArgs(
+        max_seq_length=4096,
+        use_exact_model_name=True,
+    )
+    if args.bf16:
+        init_args["load_in_4bit"] = False
+        init_args["dtype"] = "bfloat16"
+        logger.info("Using bf16 (no quantisation) for the attack model.")
+    peft_overrides: dict = {}
+    if args.lora_r is not None:
+        peft_overrides["r"] = args.lora_r
+        peft_overrides["lora_alpha"] = args.lora_r * 2
+        logger.info("LoRA rank overridden to r=%d, alpha=%d", args.lora_r, args.lora_r * 2)
+    internal_config: dict = dict(
+        init_args=init_args,
         engine_args=art.dev.EngineArgs(**engine_args_dict),
     )
+    if peft_overrides:
+        internal_config["peft_args"] = art.dev.PeftArgs(**peft_overrides)
     if n_attack_gpus == 2:
         internal_config["training_device"] = "cuda:1"  # Unsloth on second attack GPU
     attack_model = art.TrainableModel(
@@ -1036,6 +1043,22 @@ def main():
     parser.add_argument(
         "--base_model", type=str, default="Qwen/Qwen2.5-3B-Instruct",
         help="HuggingFace base model for the attack agent (default: Qwen2.5-3B-Instruct).",
+    )
+    parser.add_argument(
+        "--bf16", action="store_true",
+        help=(
+            "Load the attack model in bfloat16 (no quantisation) instead of the "
+            "default bnb-4bit.  Requires ~16 GB per GPU for 8B models but gives "
+            "higher fidelity gradients.  Recommended with --attack_gpus 2,3 "
+            "(split-GPU) so vLLM and Unsloth each have a full A100-80GB."
+        ),
+    )
+    parser.add_argument(
+        "--lora_r", type=int, default=None,
+        help=(
+            "LoRA rank (r) override.  Default is 8.  Higher ranks (16, 32) can "
+            "improve expressiveness at the cost of more memory."
+        ),
     )
     parser.add_argument(
         "--resume",

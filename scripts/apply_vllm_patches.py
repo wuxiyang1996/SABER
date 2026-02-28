@@ -2,7 +2,7 @@
 """
 Apply ART 0.5.x ↔ vLLM 0.11.x compatibility patches.
 
-Five patches:
+Six patches:
   1. Add pause_generation / resume_generation stubs to AsyncLLM
      (ART calls them; vLLM < 0.16 does not have them).
   2. Replace run_on_workers(do_sleep/do_wake_up) with native
@@ -16,6 +16,9 @@ Five patches:
   4. In UnslothService._state: if config has "training_device", move
      model and peft_model to that device so inference (vLLM) and
      training (Unsloth) can use different GPUs (e.g. --attack_gpus 2,3).
+  5. In UnslothService.train(): when training_device is set (2-GPU split),
+     skip vLLM sleep/wake entirely. Training runs on a separate GPU so
+     vLLM's memory is never touched — eliminates OOM from fragmentation.
 
 Usage:
     python scripts/apply_vllm_patches.py          # auto-detect site-packages
@@ -259,6 +262,219 @@ def patch_unsloth_training_device(sp: str, *, dry_run: bool = False) -> bool:
     return True
 
 
+def patch_split_gpu_sleep_wake(sp: str, *, dry_run: bool = False) -> bool:
+    """Patch 5: skip vLLM sleep/wake when training_device is set (2-GPU split).
+
+    When training and inference run on separate GPUs, vLLM doesn't need to
+    sleep/wake because training never touches the inference GPU's memory.
+    This eliminates the OOM from the sleep/wake fragmentation cycle.
+    """
+    path = os.path.join(sp, "art", "unsloth", "service.py")
+    if not os.path.isfile(path):
+        print(f"[SKIP] {path} not found (ART not installed?)")
+        return False
+
+    with open(path) as f:
+        src = f.read()
+
+    if '_split_gpu = training_device is not None' in src:
+        print("[OK]   Patch 5: split-GPU sleep/wake bypass already present")
+        return False
+
+    # Look for the train method's llm assignment
+    anchor = "        llm = await self.llm\n\n        # Pause generation"
+    if anchor not in src:
+        anchor = "        llm = await self.llm\n        training_device = self.config.get"
+        if anchor in src:
+            print("[OK]   Patch 5: split-GPU sleep/wake bypass already present (alt check)")
+            return False
+        print("[SKIP] Patch 5: could not find anchor in train() method")
+        return False
+
+    if dry_run:
+        print("[NEED] Patch 5: add split-GPU sleep/wake bypass in train()")
+        return True
+
+    # Replace the train method's preamble and sleep/wake sections
+    patched = src
+
+    # 1. Add training_device lookup after llm assignment
+    patched = patched.replace(
+        "        llm = await self.llm\n\n        # Pause generation to prevent new requests during training\n        await llm.pause_generation()",
+        "        llm = await self.llm\n"
+        "        training_device = self.config.get(\"training_device\")\n"
+        "        _split_gpu = training_device is not None\n\n"
+        "        # Pause generation to prevent new requests during training\n"
+        "        await llm.pause_generation()",
+        1,
+    )
+
+    # 2. Guard the sleep section
+    old_sleep_block = (
+        "        # Always use level 1 sleep so that model weights are offloaded to CPU\n"
+        "        # and properly restored on wake_up.  Level 2 discards weights without\n"
+        "        # backup, leaving vLLM with uninitialized GPU memory after wake_up.\n"
+        "        if not llm.output_processor.has_unfinished_requests():\n"
+        "            await llm.reset_prefix_cache()\n"
+        "        sleep_level = 1\n\n"
+        "        # Put workers to sleep\n"
+        "        await llm.sleep(sleep_level)\n"
+        "        self._is_sleeping = True\n"
+        "        gc_and_empty_cuda_cache()\n\n"
+        "        # Reload training model to GPU (after vLLM is asleep)\n"
+        "        self._state.reload_to_gpu()"
+    )
+    new_sleep_block = (
+        "        if not _split_gpu:\n"
+        "            # Single-GPU: sleep vLLM to free GPU memory for training\n"
+        "            if not llm.output_processor.has_unfinished_requests():\n"
+        "                await llm.reset_prefix_cache()\n"
+        "            sleep_level = 1\n"
+        "            await llm.sleep(sleep_level)\n"
+        "            self._is_sleeping = True\n"
+        "            gc_and_empty_cuda_cache()\n\n"
+        "        # Reload training model to GPU (after vLLM is asleep)\n"
+        "        self._state.reload_to_gpu(device=training_device or \"cuda:0\")"
+    )
+    if old_sleep_block in patched:
+        patched = patched.replace(old_sleep_block, new_sleep_block, 1)
+    else:
+        print("[WARN] Patch 5: could not find sleep block to guard")
+
+    # 3. Guard the wake section — look for the offload + wake block
+    old_wake_block = (
+        "        # Offload training model to CPU before waking vLLM\n"
+        "        self._state.offload_to_cpu()\n\n"
+        "        # Aggressive cleanup so vLLM workers can restore weights to GPU without OOM.\n"
+        "        # Sync CUDA, then free memory and wait for any pending ops to complete.\n"
+        "        if torch.cuda.is_available():\n"
+        "            torch.cuda.synchronize()\n"
+        "        gc_and_empty_cuda_cache(5)\n"
+        "        await asyncio.sleep(4.0)\n"
+    )
+    new_wake_block = (
+        "        # Offload training model to CPU before waking vLLM\n"
+        "        self._state.offload_to_cpu()\n\n"
+        "        if not _split_gpu:\n"
+        "            # Single-GPU: aggressive cleanup so vLLM can restore weights\n"
+        "            if torch.cuda.is_available():\n"
+        "                torch.cuda.synchronize()\n"
+        "            gc_and_empty_cuda_cache(5)\n"
+        "            await asyncio.sleep(4.0)\n"
+    )
+    if old_wake_block in patched:
+        patched = patched.replace(old_wake_block, new_wake_block, 1)
+    else:
+        print("[WARN] Patch 5: could not find wake block to guard")
+
+    # 4. Guard the wake_up call and EngineDeadError handling
+    old_wake_call = (
+        "        # Wake up workers (may raise EngineDeadError if EngineCore died during training)\n"
+        "        try:\n"
+        "            await llm.wake_up()\n"
+        "        except Exception as e:\n"
+        "            if _EngineDeadError is not None and isinstance(e, _EngineDeadError):\n"
+        "                raise RuntimeError(\n"
+    )
+    new_wake_call = (
+        "            # Wake up workers (may raise EngineDeadError if EngineCore died)\n"
+        "            try:\n"
+        "                await llm.wake_up()\n"
+        "            except Exception as e:\n"
+        "                if _EngineDeadError is not None and isinstance(e, _EngineDeadError):\n"
+        "                    raise RuntimeError(\n"
+    )
+    if old_wake_call in patched:
+        patched = patched.replace(old_wake_call, new_wake_call, 1)
+
+        # Also indent the rest of the exception block
+        patched = patched.replace(
+            '                    "vLLM EngineCore died during training (often OOM or worker crash). "\n'
+            '                    "Restart with: python train_vla.py --resume . "\n'
+            '                    "Lower --gpu_memory_utilization (e.g. 0.60) to leave more headroom, "\n'
+            '                    "or check dmesg for OOM killer."\n'
+            '                ) from e\n'
+            '            raise\n'
+            '        self._is_sleeping = False',
+            '                        "vLLM EngineCore died during training (often OOM or worker crash). "\n'
+            '                        "Restart with: python train_vla.py --resume . "\n'
+            '                        "Lower --gpu_memory_utilization (e.g. 0.60) to leave more headroom, "\n'
+            '                        "or check dmesg for OOM killer."\n'
+            '                    ) from e\n'
+            '                raise\n'
+            '            self._is_sleeping = False',
+            1,
+        )
+    else:
+        print("[WARN] Patch 5: could not find wake_up call to guard")
+
+    with open(path, "w") as f:
+        f.write(patched)
+    print(f"[DONE] Patch 5: added split-GPU sleep/wake bypass in {path}")
+    return True
+
+
+def patch_get_model_config_training_device(sp: str, *, dry_run: bool = False) -> bool:
+    """Patch 6: preserve training_device through get_model_config().
+
+    ART's get_model_config() rebuilds InternalModelConfig from scratch,
+    dropping unknown keys like training_device.  This patch forwards it.
+    """
+    path = os.path.join(sp, "art", "dev", "get_model_config.py")
+    if not os.path.isfile(path):
+        print(f"[SKIP] {path} not found (ART not installed?)")
+        return False
+
+    with open(path) as f:
+        src = f.read()
+
+    if 'config.get("training_device")' in src:
+        print("[OK]   Patch 6: training_device forwarding already present")
+        return False
+
+    anchor = '    return InternalModelConfig(\n'
+    if anchor not in src:
+        print("[SKIP] Patch 6: anchor not found in get_model_config.py")
+        return False
+
+    if dry_run:
+        print("[NEED] Patch 6: forward training_device through get_model_config()")
+        return True
+
+    # Replace "return InternalModelConfig(..." with "result = ...; forward; return result"
+    old_return = (
+        '    return InternalModelConfig(\n'
+        '        init_args=init_args,\n'
+        '        engine_args=engine_args,\n'
+        '        peft_args=peft_args,\n'
+        '        tinker_args=config.get("tinker_args"),\n'
+        '        trainer_args=trainer_args,\n'
+        '    )'
+    )
+    new_return = (
+        '    result = InternalModelConfig(\n'
+        '        init_args=init_args,\n'
+        '        engine_args=engine_args,\n'
+        '        peft_args=peft_args,\n'
+        '        tinker_args=config.get("tinker_args"),\n'
+        '        trainer_args=trainer_args,\n'
+        '    )\n'
+        '    if config.get("training_device"):\n'
+        '        result["training_device"] = config["training_device"]\n'
+        '    return result'
+    )
+
+    if old_return not in src:
+        print("[SKIP] Patch 6: return block not found (already modified?)")
+        return False
+
+    patched = src.replace(old_return, new_return, 1)
+    with open(path, "w") as f:
+        f.write(patched)
+    print(f"[DONE] Patch 6: forward training_device in {path}")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Dry-run: report status only")
@@ -271,15 +487,17 @@ def main() -> None:
     p2 = patch_unsloth_service(sp, dry_run=args.check)
     p3 = patch_tool_parser_import(sp, dry_run=args.check)
     p4 = patch_unsloth_training_device(sp, dry_run=args.check)
+    p5 = patch_split_gpu_sleep_wake(sp, dry_run=args.check)
+    p6 = patch_get_model_config_training_device(sp, dry_run=args.check)
 
     if args.check:
-        if p1 or p2 or p3 or p4:
+        if p1 or p2 or p3 or p4 or p5 or p6:
             print("\nRun without --check to apply patches.")
             sys.exit(1)
         else:
             print("\nAll patches already applied.")
     else:
-        if not p1 and not p2 and not p3 and not p4:
+        if not p1 and not p2 and not p3 and not p4 and not p5 and not p6:
             print("\nNothing to patch.")
 
 
