@@ -917,7 +917,7 @@ def main():
     )
     parser.add_argument(
         "--max_turns", type=int, default=8,
-        help="Max ReAct tool-call rounds per episode. Increase (e.g. 8–12) so the agent can chain multiple tools for stronger attacks. Default: 8.",
+        help="Max attacks per episode (each attack = one FIND + one APPLY call). Increase (e.g. 8–12) so the agent can chain multiple attacks for stronger perturbations. Default: 8.",
     )
     parser.add_argument(
         "--stealth_weight", type=float, default=DEFAULT_STEALTH_WEIGHT,
