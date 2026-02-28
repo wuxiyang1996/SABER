@@ -596,6 +596,12 @@ async def train(args: argparse.Namespace) -> None:
         internal_config["peft_args"] = art.dev.PeftArgs(**peft_overrides)
     if n_attack_gpus == 2:
         internal_config["training_device"] = "cuda:1"  # Unsloth on second attack GPU
+        if init_args.get("load_in_4bit", True):
+            # Quantised models cannot be moved between CUDA devices;
+            # split-GPU loads on cuda:1 but accelerate trains on cuda:0.
+            init_args["load_in_4bit"] = False
+            init_args["dtype"] = "bfloat16"
+            logger.info("Split-GPU mode: forcing bf16 (quantised models cannot change device).")
     attack_model = art.TrainableModel(
         name=args.model_name,
         project=args.project_name,
