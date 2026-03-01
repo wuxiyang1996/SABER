@@ -576,7 +576,7 @@ async def train(args: argparse.Namespace) -> None:
         gpu_memory_utilization=args.gpu_memory_utilization,
     )
     init_args = art.dev.InitArgs(
-        max_seq_length=4096,
+        max_seq_length=args.max_seq_length,
         use_exact_model_name=True,
     )
     if args.bf16:
@@ -1088,6 +1088,15 @@ def main():
             "default bnb-4bit.  Requires ~16 GB per GPU for 8B models but gives "
             "higher fidelity gradients.  Recommended with --attack_gpus 2,3 "
             "(split-GPU) so vLLM and Unsloth each have a full A100-80GB."
+        ),
+    )
+    parser.add_argument(
+        "--max_seq_length", type=int, default=8192,
+        help=(
+            "Maximum sequence length for training.  Must be large enough to fit "
+            "the system prompt + tool schemas + all tool-call turns.  If too small, "
+            "assistant tokens (and their logprobs) get truncated and training "
+            "produces no gradient updates.  Default 8192."
         ),
     )
     parser.add_argument(
