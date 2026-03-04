@@ -83,13 +83,16 @@ def aggregate_from_per_episode(per_episode: list) -> dict[str, dict]:
             continue
         d = by_suite[suite]
         n = len(d["tool_calls"])
+        bl_steps = sum(d["baseline_steps"]) / n
+        at_steps = sum(d["attack_steps"]) / n
         result[suite] = {
             "num_episodes": n,
             "avg_tool_calls": sum(d["tool_calls"]) / n,
             "avg_char_edit_dist": sum(d["chars_changed"]) / n,
-            "avg_baseline_steps": sum(d["baseline_steps"]) / n,
-            "avg_attack_steps": sum(d["attack_steps"]) / n,
-            "action_seq_length_change": (sum(d["attack_steps"]) - sum(d["baseline_steps"])) / n,
+            "avg_baseline_steps": bl_steps,
+            "avg_attack_steps": at_steps,
+            "action_seq_length_change": at_steps - bl_steps,
+            "action_inflation_ratio": at_steps / bl_steps if bl_steps and bl_steps > 0 else None,
             "baseline_task_success_rate": sum(d["baseline_success"]) / n,
             "task_execution_success_rate": sum(d["attack_success"]) / n,
             "avg_constraint_violations": sum(d["attack_constraint_violations"]) / n,
@@ -130,6 +133,10 @@ def aggregate_from_per_task(per_task: dict, baseline_summary: dict, attack_summa
         if base_steps is not None:
             by_suite[suite]["baseline_steps_sum"] += base_steps * c
 
+    # When per_task has no avg_tools_called/avg_constraint_violations, use file-level from attack_summary
+    file_avg_tools = attack_summary.get("avg_tools_called")
+    file_avg_cv = attack_summary.get("avg_constraint_violations")
+
     result = {}
     for suite in LIBERO_SUITES:
         if suite not in by_suite or by_suite[suite]["count"] == 0:
@@ -139,16 +146,20 @@ def aggregate_from_per_task(per_task: dict, baseline_summary: dict, attack_summa
         baseline_success_rate = d["baseline_success_sum"] / n if d["baseline_success_sum"] or "baseline_success_sum" in str(d) else None
         avg_baseline_steps = d["baseline_steps_sum"] / n if d["baseline_steps_sum"] else None
         avg_attack_steps = d["attack_steps_sum"] / n
+        avg_tool_calls = d["tool_calls_sum"] / n if d["tool_calls_sum"] else (file_avg_tools if file_avg_tools is not None else 0.0)
+        avg_cv = d["constraint_viol_sum"] / n if d["constraint_viol_sum"] else (file_avg_cv if file_avg_cv is not None else 0.0)
+        action_inflation_ratio = (avg_attack_steps / avg_baseline_steps) if avg_baseline_steps and avg_baseline_steps > 0 else None
         result[suite] = {
             "num_episodes": n,
-            "avg_tool_calls": d["tool_calls_sum"] / n,
+            "avg_tool_calls": avg_tool_calls,
             "avg_char_edit_dist": d["chars_sum"] / n,
             "avg_baseline_steps": avg_baseline_steps,
             "avg_attack_steps": avg_attack_steps,
             "action_seq_length_change": (avg_attack_steps - avg_baseline_steps) if avg_baseline_steps is not None else None,
+            "action_inflation_ratio": action_inflation_ratio,
             "baseline_task_success_rate": baseline_success_rate,
             "task_execution_success_rate": d["attack_success_sum"] / n,
-            "avg_constraint_violations": d["constraint_viol_sum"] / n,
+            "avg_constraint_violations": avg_cv,
         }
     return result
 
@@ -177,6 +188,9 @@ def process_file(path: Path, data: dict) -> dict | None:
     avg_action_delta = None
     if all(s.get("action_seq_length_change") is not None for s in per_suite.values()):
         avg_action_delta = sum(s["action_seq_length_change"] * s["num_episodes"] for s in per_suite.values()) / n_total
+    total_baseline_steps = sum((s.get("avg_baseline_steps") or 0) * s["num_episodes"] for s in per_suite.values())
+    total_attack_steps = sum((s.get("avg_attack_steps") or 0) * s["num_episodes"] for s in per_suite.values())
+    action_inflation_ratio = total_attack_steps / total_baseline_steps if total_baseline_steps and total_baseline_steps > 0 else None
     task_success = sum(s["task_execution_success_rate"] * s["num_episodes"] for s in per_suite.values()) / n_total
     avg_cv = sum(s["avg_constraint_violations"] * s["num_episodes"] for s in per_suite.values()) / n_total
     baseline_success = None
@@ -189,12 +203,14 @@ def process_file(path: Path, data: dict) -> dict | None:
         "victim_model": victim,
         "objective": objective,
         "per_suite": per_suite,
+        "baseline_summary": data.get("baseline_summary"),
         "averaged": {
             "num_episodes": n_total,
             "baseline_task_success_rate": baseline_success,
             "avg_tool_calls": avg_tool_calls,
             "avg_char_edit_dist": avg_char_edit,
             "action_seq_length_change": avg_action_delta,
+            "action_inflation_ratio": action_inflation_ratio,
             "task_execution_success_rate": task_success,
             "avg_constraint_violations": avg_cv,
         },
@@ -203,7 +219,7 @@ def process_file(path: Path, data: dict) -> dict | None:
 
 def collect_result_paths() -> list[Path]:
     paths = []
-    # eval_result: all replay_*.json
+    # eval_result: all replay_*.json (preferred for openpi_pi05 and openpi_pi0 task_failure)
     eval_result = OUTPUTS / "eval_result"
     if eval_result.exists():
         for f in eval_result.glob("replay_*.json"):
@@ -215,6 +231,23 @@ def collect_result_paths() -> list[Path]:
             for f in folder_path.glob("*.json"):
                 paths.append(f)
     return sorted(paths)
+
+
+def prefer_eval_result_replay(results: list[dict]) -> list[dict]:
+    """When multiple results exist for the same (victim_model, objective), prefer the one from eval_result/replay_*.json."""
+    key_to_result: dict[tuple[str, str], dict] = {}
+    for r in results:
+        key = (r["victim_model"], r["objective"])
+        src = r.get("source_path", "")
+        is_eval_replay = "eval_result" in src and "replay_" in src
+        existing = key_to_result.get(key)
+        if existing is None:
+            key_to_result[key] = r
+        elif is_eval_replay:
+            # Prefer this eval_result replay over existing (e.g. from agent_output_records)
+            key_to_result[key] = r
+        # else keep existing
+    return list(key_to_result.values())
 
 
 def main():
@@ -229,6 +262,8 @@ def main():
         out = process_file(path, data)
         if out:
             results.append(out)
+    # Prefer eval_result replay files when duplicate (victim, objective) exist (task_failure, action_inflation, constraint_violation; e.g. openpi_pi05/openpi_pi0)
+    results = prefer_eval_result_replay(results)
 
     # --- Text report ---
     print("=" * 100)
@@ -255,6 +290,33 @@ def main():
         print("Averaged (all categories):")
         print(f"  baseline_ter={base_avg_str}  avg_tool_calls={a['avg_tool_calls']:.2f}  avg_char_edit={a['avg_char_edit_dist']:.1f}  "
               f"action_seq_length_change={delta_avg_str}  task_success_rate={a['task_execution_success_rate']:.3f}  avg_constraint_violations={a['avg_constraint_violations']:.1f}  (n={a['num_episodes']})")
+
+    # --- Baseline (no attack) per VLA model: initial task success rate, action length, constraint violations ---
+    baseline_by_victim: dict[str, dict] = {}
+    for r in results:
+        bl = r.get("baseline_summary")
+        if not bl or r["victim_model"] in baseline_by_victim:
+            continue
+        baseline_by_victim[r["victim_model"]] = {
+            "task_execution_rate": bl.get("task_execution_rate"),
+            "avg_action_seq_length": bl.get("avg_action_seq_length"),
+            "avg_constraint_violations": bl.get("avg_constraint_violations"),
+        }
+    if baseline_by_victim:
+        print("\n" + "=" * 100)
+        print("BASELINE (NO ATTACK) PER VLA MODEL: initial task execution success rate, action length, constraint violations")
+        print("=" * 100)
+        print(f"{'Victim Model':<24} {'Initial task success rate':<28} {'Avg action length':<20} {'Avg constraint violations':<28}")
+        print("-" * 100)
+        for victim in sorted(baseline_by_victim.keys()):
+            b = baseline_by_victim[victim]
+            sr = b.get("task_execution_rate")
+            steps = b.get("avg_action_seq_length")
+            cv = b.get("avg_constraint_violations")
+            sr_str = f"{sr:.3f}" if sr is not None else "N/A"
+            steps_str = f"{steps:.1f}" if steps is not None else "N/A"
+            cv_str = f"{cv:.1f}" if cv is not None else "N/A"
+            print(f"{victim:<24} {sr_str:<28} {steps_str:<20} {cv_str:<28}")
 
     # --- Summary table: averaged metrics only (for paper) ---
     print("\n" + "=" * 100)
@@ -320,6 +382,152 @@ def main():
                 f.write(f"| {suite} | {base_str} | {s['avg_tool_calls']:.2f} | {s['avg_char_edit_dist']:.1f} | {delta_str} | {s['task_execution_success_rate']:.3f} | {s['avg_constraint_violations']:.1f} | {s['num_episodes']} |\n")
             f.write("\n")
     print(f"Markdown report written to: {md_path}")
+
+    # --- Action inflation only: breakdown over 4 task categories + overall (incl. action inflation ratio) ---
+    action_inflation_results = [r for r in results if r["objective"] == "action_inflation"]
+    if action_inflation_results:
+        ai_path = FRAMEWORK_ROOT / "outputs" / "action_inflation_breakdown.md"
+        with open(ai_path, "w") as f:
+            f.write("# Action inflation: breakdown over LIBERO task categories\n\n")
+            f.write("Metrics: **Baseline TER** | **Tool Calls** | **Char Edit** | **Action inflation ratio** | **Task Success** | **Const. Viol.**\n\n")
+            f.write("**Action inflation ratio** = (avg steps after perturbation) / (avg steps before) = attack_steps / baseline_steps.\n\n")
+            f.write("For each victim model: per-category (libero_spatial, libero_object, libero_goal, libero_10) and **Overall** (averaged across all four categories).\n\n---\n\n")
+            for r in action_inflation_results:
+                f.write(f"## {r['victim_model']}\n\n")
+                f.write("| Category | Baseline TER | Tool Calls | Char Edit | Action inflation ratio | Task Success | Const. Viol. |\n")
+                f.write("|----------|-------------|------------|-----------|------------------------|--------------|-------------|\n")
+                total_attack_steps = 0.0
+                total_baseline_steps = 0.0
+                for suite in LIBERO_SUITES:
+                    if suite not in r["per_suite"]:
+                        continue
+                    s = r["per_suite"][suite]
+                    base_sr = s.get("baseline_task_success_rate")
+                    base_str = f"{base_sr:.3f}" if base_sr is not None else "N/A"
+                    bl_steps = s.get("avg_baseline_steps") or 0
+                    at_steps = s.get("avg_attack_steps") or 0
+                    n_ep = s["num_episodes"]
+                    total_attack_steps += at_steps * n_ep
+                    total_baseline_steps += bl_steps * n_ep
+                    if bl_steps and bl_steps > 0:
+                        ratio_str = f"{at_steps / bl_steps:.2f}"
+                    else:
+                        ratio_str = "N/A"
+                    f.write(f"| {suite} | {base_str} | {s['avg_tool_calls']:.2f} | {s['avg_char_edit_dist']:.1f} | {ratio_str} | {s['task_execution_success_rate']:.3f} | {s['avg_constraint_violations']:.1f} |\n")
+                a = r["averaged"]
+                base_avg = a.get("baseline_task_success_rate")
+                base_avg_str = f"{base_avg:.3f}" if base_avg is not None else "N/A"
+                overall_ratio_str = f"{total_attack_steps / total_baseline_steps:.2f}" if total_baseline_steps and total_baseline_steps > 0 else "N/A"
+                f.write(f"| **Overall** | **{base_avg_str}** | **{a['avg_tool_calls']:.2f}** | **{a['avg_char_edit_dist']:.1f}** | **{overall_ratio_str}** | **{a['task_execution_success_rate']:.3f}** | **{a['avg_constraint_violations']:.1f}** |\n\n")
+        print(f"Action inflation breakdown written to: {ai_path}")
+
+    def write_objective_breakdown(objective: str, title: str, filename: str) -> None:
+        """Write per-category + overall breakdown for an objective (same format as action inflation)."""
+        subset = [r for r in results if r["objective"] == objective]
+        if not subset:
+            return
+        out_path = FRAMEWORK_ROOT / "outputs" / filename
+        with open(out_path, "w") as f:
+            f.write(f"# {title}: breakdown over LIBERO task categories\n\n")
+            f.write("Metrics: **Baseline TER** | **Tool Calls** | **Char Edit** | **Action inflation ratio** | **Task Success** | **Const. Viol.**\n\n")
+            f.write("**Action inflation ratio** = (avg steps after perturbation) / (avg steps before) = attack_steps / baseline_steps.\n\n")
+            f.write("For each victim model: per-category (libero_spatial, libero_object, libero_goal, libero_10) and **Overall** (averaged across all four categories).\n\n---\n\n")
+            for r in subset:
+                f.write(f"## {r['victim_model']}\n\n")
+                f.write("| Category | Baseline TER | Tool Calls | Char Edit | Action inflation ratio | Task Success | Const. Viol. |\n")
+                f.write("|----------|-------------|------------|-----------|------------------------|--------------|-------------|\n")
+                total_attack_steps = 0.0
+                total_baseline_steps = 0.0
+                for suite in LIBERO_SUITES:
+                    if suite not in r["per_suite"]:
+                        continue
+                    s = r["per_suite"][suite]
+                    base_sr = s.get("baseline_task_success_rate")
+                    base_str = f"{base_sr:.3f}" if base_sr is not None else "N/A"
+                    bl_steps = s.get("avg_baseline_steps") or 0
+                    at_steps = s.get("avg_attack_steps") or 0
+                    n_ep = s["num_episodes"]
+                    total_attack_steps += at_steps * n_ep
+                    total_baseline_steps += bl_steps * n_ep
+                    if bl_steps and bl_steps > 0:
+                        ratio_str = f"{at_steps / bl_steps:.2f}"
+                    else:
+                        ratio_str = "N/A"
+                    f.write(f"| {suite} | {base_str} | {s['avg_tool_calls']:.2f} | {s['avg_char_edit_dist']:.1f} | {ratio_str} | {s['task_execution_success_rate']:.3f} | {s['avg_constraint_violations']:.1f} |\n")
+                a = r["averaged"]
+                base_avg = a.get("baseline_task_success_rate")
+                base_avg_str = f"{base_avg:.3f}" if base_avg is not None else "N/A"
+                overall_ratio_str = f"{total_attack_steps / total_baseline_steps:.2f}" if total_baseline_steps and total_baseline_steps > 0 else "N/A"
+                f.write(f"| **Overall** | **{base_avg_str}** | **{a['avg_tool_calls']:.2f}** | **{a['avg_char_edit_dist']:.1f}** | **{overall_ratio_str}** | **{a['task_execution_success_rate']:.3f}** | **{a['avg_constraint_violations']:.1f}** |\n\n")
+        print(f"{title} breakdown written to: {out_path}")
+
+    write_objective_breakdown("constraint_violation", "Constraint violation", "constraint_violation_breakdown.md")
+    write_objective_breakdown("task_failure", "Task failure", "task_failure_breakdown.md")
+
+    # --- Task failure: breakdown with paper metrics (i)-(v) and baseline (no attack) per VLA ---
+    task_failure_results = [r for r in results if r["objective"] == "task_failure"]
+    if task_failure_results:
+        tf_path = FRAMEWORK_ROOT / "outputs" / "task_failure_metrics_breakdown.md"
+        with open(tf_path, "w") as f:
+            f.write("# Task failure: metrics breakdown by task category\n\n")
+            f.write("**Metrics.** We report: ")
+            f.write("(i) the average number of tool calls per episode by the attack agent, ")
+            f.write("(ii) the character-level instruction edit distance (average number of characters modified), ")
+            f.write("(iii) the ratio of action-sequence length inflation before and after perturbation, ")
+            f.write("(iv) the task execution success rate, and ")
+            f.write("(v) the average number of constraint violations per episode.\n\n")
+            f.write("## Baseline (no attack) per VLA model\n\n")
+            f.write("Initial task execution success rate, average action length, and average constraint violations without attack.\n\n")
+            f.write("| Victim Model | Initial task success rate | Avg action length | Avg constraint violations |\n")
+            f.write("|--------------|---------------------------|-------------------|---------------------------|\n")
+            for victim in sorted(baseline_by_victim.keys()):
+                b = baseline_by_victim[victim]
+                sr = b.get("task_execution_rate")
+                steps = b.get("avg_action_seq_length")
+                cv = b.get("avg_constraint_violations")
+                sr_str = f"{sr:.3f}" if sr is not None else "—"
+                steps_str = f"{steps:.1f}" if steps is not None else "—"
+                cv_str = f"{cv:.1f}" if cv is not None else "—"
+                f.write(f"| {victim} | {sr_str} | {steps_str} | {cv_str} |\n")
+            f.write("\n## Per-task-category breakdown (task failure)\n\n")
+            f.write("(i) Tool calls/episode | (ii) Char edit dist | (iii) Action inflation ratio | (iv) Task success rate | (v) Constraint violations/episode\n\n")
+            for r in task_failure_results:
+                f.write(f"### {r['victim_model']}\n\n")
+                f.write("| Task category | (i) Tool calls | (ii) Char edit dist | (iii) Action inflation ratio | (iv) Task success rate | (v) Const. viol. | Baseline TER | n |\n")
+                f.write("|--------------|----------------|---------------------|------------------------------|----------------------|-----------------|---------------|---|\n")
+                for suite in LIBERO_SUITES:
+                    if suite not in r["per_suite"]:
+                        continue
+                    s = r["per_suite"][suite]
+                    base_sr = s.get("baseline_task_success_rate")
+                    base_str = f"{base_sr:.3f}" if base_sr is not None else "—"
+                    ratio = s.get("action_inflation_ratio")
+                    ratio_str = f"{ratio:.2f}" if ratio is not None else "—"
+                    f.write(f"| {suite} | {s['avg_tool_calls']:.2f} | {s['avg_char_edit_dist']:.1f} | {ratio_str} | {s['task_execution_success_rate']:.3f} | {s['avg_constraint_violations']:.1f} | {base_str} | {s['num_episodes']} |\n")
+                a = r["averaged"]
+                base_avg = a.get("baseline_task_success_rate")
+                base_avg_str = f"{base_avg:.3f}" if base_avg is not None else "—"
+                overall_ratio = a.get("action_inflation_ratio")
+                overall_ratio_str = f"{overall_ratio:.2f}" if overall_ratio is not None else "—"
+                f.write(f"| **Overall** | **{a['avg_tool_calls']:.2f}** | **{a['avg_char_edit_dist']:.1f}** | **{overall_ratio_str}** | **{a['task_execution_success_rate']:.3f}** | **{a['avg_constraint_violations']:.1f}** | **{base_avg_str}** | **{a['num_episodes']}** |\n\n")
+        print(f"Task failure metrics breakdown (paper metrics) written to: {tf_path}")
+
+    # --- Write baseline (no attack) table to main markdown report ---
+    if baseline_by_victim and md_path:
+        with open(md_path, "a") as f:
+            f.write("\n## Baseline (no attack) per VLA model\n\n")
+            f.write("Initial task execution success rate, average action length, and average constraint violations **without attack** for each victim model.\n\n")
+            f.write("| Victim Model | Initial task success rate | Avg action length | Avg constraint violations |\n")
+            f.write("|--------------|---------------------------|-------------------|---------------------------|\n")
+            for victim in sorted(baseline_by_victim.keys()):
+                b = baseline_by_victim[victim]
+                sr = b.get("task_execution_rate")
+                steps = b.get("avg_action_seq_length")
+                cv = b.get("avg_constraint_violations")
+                sr_str = f"{sr:.3f}" if sr is not None else "—"
+                steps_str = f"{steps:.1f}" if steps is not None else "—"
+                cv_str = f"{cv:.1f}" if cv is not None else "—"
+                f.write(f"| {victim} | {sr_str} | {steps_str} | {cv_str} |\n")
 
 
 if __name__ == "__main__":
