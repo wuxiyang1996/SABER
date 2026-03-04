@@ -5,9 +5,8 @@ Wraps the OpenPI pi0 (flow-matching VLA) model for inference in the LIBERO
 manipulation benchmark. Uses the same observation/action interface as
 Pi05LiberoModel (agentview + wrist images, 8-dim state, 7-dim actions).
 
-By default loads the pi0_base checkpoint for zero-shot LIBERO evaluation.
-To use a LIBERO-finetuned pi0 checkpoint, pass checkpoint_path (e.g. from
-training with the OpenPI pi0_libero config).
+By default loads the pi0_libero checkpoint (fine-tuned on LIBERO).
+To use a different checkpoint, pass checkpoint_path.
 
 LIBERO observations:
   - agentview_image, robot0_eye_in_hand_image, robot0_eef_pos,
@@ -75,12 +74,11 @@ class Pi0LiberoModel:
 
     Same API as Pi05LiberoModel: agentview + wrist images, 8-dim state,
     7-dim actions. Uses OpenPI config ``pi0_libero`` (LIBERO observation/action
-    space). Default checkpoint is pi0_base (zero-shot); pass checkpoint_path
-    for a LIBERO-finetuned pi0 if available.
+    space). Default checkpoint is pi0_libero (fine-tuned); pass checkpoint_path
+    to override.
     """
 
-    # Zero-shot: base pi0 checkpoint. For finetuned LIBERO pi0, pass checkpoint_path.
-    DEFAULT_CHECKPOINT_URL = "gs://openpi-assets/checkpoints/pi0_base"
+    DEFAULT_CHECKPOINT_URL = "gs://openpi-assets/checkpoints/pi0_libero"
 
     def __init__(
         self,

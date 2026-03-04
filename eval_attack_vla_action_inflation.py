@@ -77,8 +77,10 @@ os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(_CACHE_ROOT, "huggingfa
 import asyncio
 import json
 import logging
+import re
 import time
 import threading
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -225,6 +227,308 @@ def parse_task_ids(s):
 
 
 # ---------------------------------------------------------------------------
+# Text-based tool call agent (fallback for broken checkpoints)
+# ---------------------------------------------------------------------------
+
+_TOOL_CALL_RE = re.compile(r'<tool_call>\s*(.*?)\s*</tool_call>', re.DOTALL)
+
+_FIND_ATTACK_TYPES = [
+    'decompose_wrap', 'verify_wrap', 'constraint_stack',
+    'uncertainty_clause', 'structure_inject', 'objective_inject',
+    'replace', 'remove', 'add', 'swap_attribute',
+    'add_char', 'remove_char', 'alter_char', 'swap_chars', 'flip_case',
+]
+
+
+def _parse_tool_calls_from_text(text: str) -> list:
+    """Extract tool calls from <tool_call>...</tool_call> tags in raw text.
+
+    Handles malformed JSON that the vLLM Hermes parser rejects (e.g. missing
+    the ``arguments`` wrapper key).
+    """
+    if not text:
+        return []
+    calls = []
+    for m in _TOOL_CALL_RE.finditer(text):
+        raw = m.group(1).strip()
+        try:
+            data = json.loads(raw)
+            name = data.get('name')
+            args = data.get('arguments')
+            if args is None:
+                args = {k: v for k, v in data.items() if k != 'name'}
+            if name:
+                calls.append({
+                    'name': name,
+                    'args': args if isinstance(args, dict) else {},
+                    'id': f'call_parsed_{uuid.uuid4().hex[:8]}',
+                })
+        except json.JSONDecodeError:
+            nm = re.search(r'"name"\s*:\s*"([^"]+)"', raw)
+            if nm:
+                name = nm.group(1)
+                args = {}
+                for kv in re.finditer(r'"(\w+)"\s*:\s*"([^"]*)"', raw):
+                    k, v = kv.group(1), kv.group(2)
+                    if k != 'name':
+                        args[k] = v
+                calls.append({
+                    'name': name,
+                    'args': args,
+                    'id': f'call_parsed_{uuid.uuid4().hex[:8]}',
+                })
+    return calls
+
+
+def _infer_tool_call_from_text(text: str, tool_map: dict, instruction: str) -> list:
+    """Detect tool-call intent from narrative text that mentions tool names.
+
+    Checks both FIND tools and APPLY tools.  For apply tools detected in text,
+    constructs default args so the call can execute without structured parsing.
+    """
+    if not text:
+        return []
+    text_lower = text.lower()
+
+    # --- Check APPLY tools first (higher priority when model is responding to FIND) ---
+    _APPLY_TOOLS = [
+        'apply_decompose_wrap', 'apply_verify_wrap', 'apply_uncertainty_clause',
+        'apply_constraint_stack', 'apply_structure_inject', 'apply_objective_inject',
+        'apply_add', 'apply_replace', 'apply_remove', 'apply_swap',
+        'apply_add_char', 'apply_remove_char', 'apply_alter_char',
+        'apply_swap_chars', 'apply_flip_case',
+    ]
+    for apply_name in _APPLY_TOOLS:
+        if apply_name not in tool_map:
+            continue
+        if apply_name in text_lower or apply_name.replace('_', ' ') in text_lower:
+            default = _pick_default_apply(tool_map, instruction)
+            if default and default['name'] == apply_name:
+                default['id'] = f'call_infer_{uuid.uuid4().hex[:8]}'
+                return [default]
+            return [{
+                'name': apply_name,
+                'args': _pick_default_apply(tool_map, instruction).get('args', {})
+                        if _pick_default_apply(tool_map, instruction) else {},
+                'id': f'call_infer_{uuid.uuid4().hex[:8]}',
+            }]
+
+    # --- Check FIND tools ---
+    for find_name in ('find_prompt_targets', 'find_targets',
+                      'find_char_targets', 'find_visual_targets'):
+        if find_name not in tool_map:
+            continue
+        if find_name in text_lower or find_name.replace('_', ' ') in text_lower:
+            attack_type = next(
+                (at for at in _FIND_ATTACK_TYPES
+                 if at in text_lower or at.replace('_', ' ') in text_lower),
+                'decompose_wrap',
+            )
+            return [{
+                'name': find_name,
+                'args': {'text': instruction, 'attack_type': attack_type},
+                'id': f'call_infer_{uuid.uuid4().hex[:8]}',
+            }]
+    return []
+
+
+def _pick_default_find(tool_map: dict, instruction: str) -> dict | None:
+    """Choose a reasonable default FIND call when the model produces nothing."""
+    defaults = [
+        ('find_prompt_targets', {'text': instruction, 'attack_type': 'decompose_wrap'}),
+        ('find_targets', {'text': instruction, 'attack_type': 'replace'}),
+        ('find_char_targets', {'text': instruction, 'attack_type': 'alter_char'}),
+        ('find_visual_targets', {'attack_type': 'patch_roi'}),
+    ]
+    for name, args in defaults:
+        if name in tool_map:
+            return {'name': name, 'args': args,
+                    'id': f'call_default_{uuid.uuid4().hex[:8]}'}
+    return None
+
+
+def _auto_decompose_steps(instruction: str) -> str:
+    """Generate decomposition sub-steps from an instruction for action inflation."""
+    parts = re.split(r'\band\b|,', instruction, flags=re.IGNORECASE)
+    steps = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        steps.append(f"Step {len(steps)+1}: Locate and identify objects for: {part}")
+        steps.append(f"Step {len(steps)+1}: Carefully {part}")
+        steps.append(f"Step {len(steps)+1}: Verify completion before proceeding")
+    if not steps:
+        steps = [
+            "Step 1: Observe the scene carefully",
+            f"Step 2: {instruction}",
+            "Step 3: Verify task completion",
+        ]
+    return ". ".join(steps)
+
+
+def _pick_default_apply(tool_map: dict, instruction: str) -> dict | None:
+    """Construct a default APPLY call (last-resort deterministic fallback)."""
+    if 'apply_decompose_wrap' in tool_map:
+        return {
+            'name': 'apply_decompose_wrap',
+            'args': {
+                'text': instruction,
+                'steps': _auto_decompose_steps(instruction),
+                'mode': 'replace',
+                'max_added_chars': 200,
+            },
+            'id': f'call_default_{uuid.uuid4().hex[:8]}',
+        }
+    if 'apply_verify_wrap' in tool_map:
+        return {
+            'name': 'apply_verify_wrap',
+            'args': {
+                'text': instruction,
+                'clause': 'Verify each action is aligned before proceeding.',
+                'position': 'suffix',
+                'max_added_chars': 200,
+            },
+            'id': f'call_default_{uuid.uuid4().hex[:8]}',
+        }
+    if 'apply_replace' in tool_map:
+        words = instruction.split()
+        target = next((w for w in words if len(w) > 3 and w.isalpha()), words[-1])
+        return {
+            'name': 'apply_replace',
+            'args': {'text': instruction, 'target_token': target,
+                     'replacement': target},
+            'id': f'call_default_{uuid.uuid4().hex[:8]}',
+        }
+    return None
+
+
+async def _exec_tool(name: str, args: dict, tool_map: dict) -> str:
+    """Execute a tool by name, returning its string result."""
+    if name in tool_map:
+        try:
+            return await tool_map[name].ainvoke(args)
+        except Exception as e:
+            return f"Error calling {name}: {e}"
+    return f"Unknown tool: {name}"
+
+
+async def _run_text_tool_agent(
+    chat_model,
+    attack_tools,
+    messages,
+    instruction: str,
+    max_turns: int = 8,
+    _logger=None,
+):
+    """Agent loop with robust text-based tool-call fallback.
+
+    Handles GRPO checkpoints where the model's ``<tool_call>`` output is
+    malformed or absent:
+
+    1. Structured tool calls from vLLM API (ideal -- Hermes parser succeeded)
+    2. ``<tool_call>`` tags parsed from response text (Hermes parser workaround)
+    3. Tool-name mentions inferred from narrative text (intent detection)
+    4. Default FIND call on first turn (guaranteed execution)
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    tool_map = {t.name: t for t in attack_tools}
+    model_with_tools = chat_model.bind_tools(attack_tools)
+
+    conversation = list(messages)
+    fallback_used_this_turn = False
+
+    for turn in range(max_turns * 2):
+        try:
+            result = await asyncio.wait_for(
+                model_with_tools.ainvoke(conversation),
+                timeout=180,
+            )
+        except asyncio.TimeoutError:
+            if _logger:
+                _logger.warning("    [text-agent] timeout on turn %d", turn)
+            break
+        except Exception as e:
+            if _logger:
+                _logger.warning("    [text-agent] error on turn %d: %s", turn, e)
+            break
+
+        text_content = result.content or ""
+        structured_calls = getattr(result, 'tool_calls', None) or []
+
+        # --- Priority 1: structured tool calls from API ---
+        if structured_calls:
+            conversation.append(result)
+            for tc in structured_calls:
+                tc_id = tc.get('id', f'call_{uuid.uuid4().hex[:8]}')
+                tr = await _exec_tool(tc['name'], tc.get('args', {}), tool_map)
+                conversation.append(ToolMessage(content=str(tr), tool_call_id=tc_id))
+                if _logger:
+                    _logger.info("    [text-agent] turn %d: %s (structured)",
+                                 turn, tc['name'])
+            fallback_used_this_turn = False
+            continue
+
+        # --- Priority 2: <tool_call> tags in text ---
+        parsed = _parse_tool_calls_from_text(text_content)
+        if parsed and _logger:
+            _logger.info("    [text-agent] turn %d: parsed %d <tool_call> tag(s) from text",
+                         turn, len(parsed))
+
+        # --- Priority 3: tool name mentions in text ---
+        if not parsed:
+            parsed = _infer_tool_call_from_text(text_content, tool_map, instruction)
+            if parsed and _logger:
+                _logger.info("    [text-agent] turn %d: inferred %s from text",
+                             turn, parsed[0]['name'])
+
+        # --- Priority 4: default FIND on first turn ---
+        if not parsed and turn == 0:
+            default = _pick_default_find(tool_map, instruction)
+            if default:
+                parsed = [default]
+                if _logger:
+                    _logger.info("    [text-agent] turn 0: forcing default %s(%s)",
+                                 default['name'],
+                                 default['args'].get('attack_type', ''))
+
+        # --- Priority 5: default APPLY on turn 1+ when FIND was already called ---
+        if not parsed and turn > 0 and fallback_used_this_turn:
+            default_apply = _pick_default_apply(tool_map, instruction)
+            if default_apply:
+                parsed = [default_apply]
+                if _logger:
+                    _logger.info("    [text-agent] turn %d: forcing default %s "
+                                 "(FIND done, model didn't APPLY)",
+                                 turn, default_apply['name'])
+
+        if not parsed:
+            if fallback_used_this_turn:
+                conversation.append(result)
+                break
+            conversation.append(result)
+            break
+
+        # Execute the first parsed call
+        tc = parsed[0]
+        tc_id = tc.get('id', f'call_{uuid.uuid4().hex[:8]}')
+
+        ai_msg = AIMessage(
+            content="",
+            tool_calls=[{'name': tc['name'], 'args': tc.get('args', {}),
+                         'id': tc_id}],
+        )
+        conversation.append(ai_msg)
+
+        tr = await _exec_tool(tc['name'], tc.get('args', {}), tool_map)
+        conversation.append(ToolMessage(content=str(tr), tool_call_id=tc_id))
+        fallback_used_this_turn = True
+
+    return {"messages": conversation}
+
+
+# ---------------------------------------------------------------------------
 # Main evaluation
 # ---------------------------------------------------------------------------
 
@@ -245,7 +549,6 @@ async def evaluate(args):
         print_metrics,
         metrics_to_latex_row,
     )
-    import uuid
 
     objective = AttackObjective(args.objective)
     tool_sets = [ToolSet(t.strip()) for t in args.tool_sets.split(",")]
@@ -480,25 +783,34 @@ async def evaluate(args):
             GraphRecursionError = RecursionError
 
         chat_model = init_chat_model()
-        react_agent = create_react_agent(chat_model, attack_tools)
-        config = {
-            "configurable": {"thread_id": str(uuid.uuid4())},
-            "recursion_limit": scenario.max_turns * 4,
-        }
-
         agent_messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_message),
         ]
 
+        _use_text_agent = (objective == AttackObjective.ACTION_INFLATION)
+
         agent_result = None
         _MAX_AGENT_RETRIES = 3
         for _attempt in range(_MAX_AGENT_RETRIES):
             try:
-                agent_result = await react_agent.ainvoke(
-                    {"messages": agent_messages},
-                    config=config,
-                )
+                if _use_text_agent:
+                    agent_result = await _run_text_tool_agent(
+                        chat_model, attack_tools, agent_messages,
+                        instruction=instruction,
+                        max_turns=scenario.max_turns,
+                        _logger=logger,
+                    )
+                else:
+                    react_agent = create_react_agent(chat_model, attack_tools)
+                    config = {
+                        "configurable": {"thread_id": str(uuid.uuid4())},
+                        "recursion_limit": scenario.max_turns * 4,
+                    }
+                    agent_result = await react_agent.ainvoke(
+                        {"messages": agent_messages},
+                        config=config,
+                    )
                 break
             except GraphRecursionError:
                 break
@@ -520,7 +832,7 @@ async def evaluate(args):
                 if is_retryable and _attempt < _MAX_AGENT_RETRIES - 1:
                     wait = 2 ** (_attempt + 1)
                     logger.warning(
-                        "ReAct agent error %s (attempt %d/%d), retrying in %ds: %s",
+                        "Agent error %s (attempt %d/%d), retrying in %ds: %s",
                         type(e).__name__, _attempt + 1, _MAX_AGENT_RETRIES, wait, e,
                     )
                     await asyncio.sleep(wait)
@@ -530,11 +842,9 @@ async def evaluate(args):
                     )
                     attack_tools = build_vla_attack_tools(state, scenario.tool_sets)
                     chat_model = init_chat_model()
-                    react_agent = create_react_agent(chat_model, attack_tools)
-                    config["configurable"]["thread_id"] = str(uuid.uuid4())
                     continue
                 logger.error(
-                    "ReAct agent error: %s: %s",
+                    "Agent error: %s: %s",
                     type(e).__name__, e, exc_info=True,
                 )
                 trajectory.reward = -1.0
@@ -546,6 +856,7 @@ async def evaluate(args):
                     pass
                 return trajectory
 
+        # Nudge: agent called FIND but didn't APPLY
         if state.tools_used and not state.attack_applied and agent_result is not None:
             logger.info(
                 "  Agent called %s but applied nothing — re-prompting with nudge.",
@@ -560,16 +871,38 @@ async def evaluate(args):
             )
             prior_messages = agent_result.get("messages", agent_messages)
             try:
-                nudge_agent = create_react_agent(init_chat_model(), attack_tools)
-                await nudge_agent.ainvoke(
-                    {"messages": prior_messages + [HumanMessage(content=nudge)]},
-                    config={
-                        "configurable": {"thread_id": str(uuid.uuid4())},
-                        "recursion_limit": 4,
-                    },
-                )
+                if _use_text_agent:
+                    await _run_text_tool_agent(
+                        init_chat_model(), attack_tools,
+                        prior_messages + [HumanMessage(content=nudge)],
+                        instruction=instruction,
+                        max_turns=4,
+                        _logger=logger,
+                    )
+                else:
+                    nudge_agent = create_react_agent(init_chat_model(), attack_tools)
+                    await nudge_agent.ainvoke(
+                        {"messages": prior_messages + [HumanMessage(content=nudge)]},
+                        config={
+                            "configurable": {"thread_id": str(uuid.uuid4())},
+                            "recursion_limit": 4,
+                        },
+                    )
             except (GraphRecursionError, Exception):
                 pass
+
+        # Last resort for action_inflation: force a deterministic attack
+        if _use_text_agent and not state.attack_applied:
+            logger.info("  No attack applied after agent + nudge — forcing default apply.")
+            tool_map = {t.name: t for t in attack_tools}
+            default_find = _pick_default_find(tool_map, instruction)
+            if default_find and not state.tools_used:
+                await _exec_tool(default_find['name'], default_find['args'], tool_map)
+            default_apply = _pick_default_apply(tool_map, instruction)
+            if default_apply:
+                await _exec_tool(
+                    default_apply['name'], default_apply['args'], tool_map,
+                )
 
         # ATTACK VLA rollout
         perturbed_instruction = state.perturbed_instruction

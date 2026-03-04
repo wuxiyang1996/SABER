@@ -62,6 +62,8 @@ class SmolVLAWrapper:
         print(f"[SmolVLA] Loading from {checkpoint} ...")
         self.policy = SmolVLAPolicy.from_pretrained(checkpoint)
         self.policy = self.policy.to(device).eval()
+        print(f"[SmolVLA] n_action_steps={self.policy.config.n_action_steps} "
+              f"(using model default, ignoring replan_steps={replan_steps})")
 
         self.preprocess, self.postprocess = make_pre_post_processors(
             self.policy.config,
@@ -101,12 +103,14 @@ class SmolVLAWrapper:
             action = self.policy.select_action(batch)
         action = self.postprocess(action)
 
-        # action is (1, 7) tensor
+        # action shape: (n_action_steps, 7) tensor
         if isinstance(action, dict):
             action = action.get("action", action)
         action = action.cpu().float().numpy().astype(np.float64)
         if action.ndim == 1:
             action = action.reshape(1, -1)
+        if action.ndim == 3:
+            action = action.squeeze(0)
 
         return action
 

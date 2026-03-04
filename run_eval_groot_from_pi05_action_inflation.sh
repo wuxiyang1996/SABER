@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
-# Evaluate OpenVLA-OFT on LIBERO using pre-recorded constraint-violation attack prompts from openpi_pi05.
+# Evaluate GR00T N1.5-3B (Tacoin fine-tuned) on LIBERO — action inflation attack records from openpi_pi05.
 #
-# Reads original_instruction / perturbed_instruction from the openpi_pi05 constraint
-# violation attack record, cross-checks original_instruction against LIBERO ground
-# truth, and runs OpenVLA-OFT twice per episode (baseline + attack).
-#
-# Output goes to outputs/eval_result/ in the same JSON format as the recorded replay.
-#
-# OpenVLA-OFT specifics:
-#   - Uses continuous L1 regression action head (not discrete tokens)
-#   - Proprioceptive state projected into LLM embedding space
-#   - Two images: agentview + wrist camera
-#   - Action chunking: 8 actions per inference call
-#   - Single checkpoint for all suites:
-#       moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10
-#   - Runs in vla_models conda env (subprocess isolation)
+# Per-suite Tacoin checkpoints:
+#   libero_spatial -> Tacoin/GR00T-N1.5-3B-LIBERO-SPATIAL-8K
+#   libero_object  -> Tacoin/GR00T-N1.5-3B-LIBERO-OBJECT-8K
+#   libero_goal    -> Tacoin/GR00T-N1.5-3B-LIBERO-GOAL-8K
+#   libero_10      -> Tacoin/GR00T-N1.5-3B-LIBERO-LONG-8K
 #
 # Usage:
-#   bash run_eval_openvla_oft_from_pi05_constraint_violation.sh                 # GPU 3
-#   bash run_eval_openvla_oft_from_pi05_constraint_violation.sh --gpu 1         # GPU 1
-#   bash run_eval_openvla_oft_from_pi05_constraint_violation.sh --no-aggregate  # skip aggregation
+#   bash run_eval_groot_from_pi05_action_inflation.sh                 # GPU 3
+#   bash run_eval_groot_from_pi05_action_inflation.sh --gpu 1         # GPU 1
+#   bash run_eval_groot_from_pi05_action_inflation.sh --no-aggregate  # skip aggregation
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -35,14 +26,21 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export PYTHONUTF8=1
 
+export HF_HOME=/workspace/.cache/huggingface
+export HF_HUB_CACHE=/workspace/.cache/huggingface/hub
+export TORCH_HOME=/workspace/.cache_torch
+export HF_LEROBOT_HOME=/workspace/.cache/lerobot
+mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$TORCH_HOME" "$HF_LEROBOT_HOME"
+
 # ---- Defaults ----
 SEED=42
-REPLAN_STEPS=5
+REPLAN_STEPS=8
+MAX_STEPS=720
 VLA_GPU=3
 DO_AGGREGATE=true
 
-VICTIM="openvla_oft"
-ATTACK_RECORD="outputs/agent_output_records_constraint_violation/constraint_violation_openpi_pi05.json"
+VICTIM="groot"
+ATTACK_RECORD="outputs/agent_output_records_action_inflation/action_inflation_openpi_pi05.json"
 OUTPUT_DIR="outputs/eval_result"
 
 # ---- Parse flags ----
@@ -76,13 +74,13 @@ SOURCE_NAME=$(basename "$ATTACK_RECORD" .json)
 LOG_FILE="${OUTPUT_DIR}/${VICTIM}_from_${SOURCE_NAME}.log"
 
 echo "========================================"
-echo "  OpenVLA-OFT Constraint Violation Replay Attack Evaluation"
+echo "  GR00T N1.5 Action Inflation Replay Eval"
 echo "  Victim:  ${VICTIM}"
-echo "  HF:      moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10"
 echo "  Source:  ${ATTACK_RECORD}"
 echo "  GPU:     ${VLA_GPU}"
 echo "  Seed:    ${SEED}"
 echo "  Replan:  ${REPLAN_STEPS}"
+echo "  MaxStep: ${MAX_STEPS}"
 echo "  Output:  ${OUTPUT_DIR}/"
 echo "========================================"
 echo ""
@@ -93,7 +91,7 @@ python eval_replay_attack.py \
   --attack_record "$ATTACK_RECORD" \
   --seed "$SEED" \
   --replan_steps "$REPLAN_STEPS" \
-  --episodes_per_task 5 \
+  --max_steps "$MAX_STEPS" \
   --output_dir "$OUTPUT_DIR" \
   2>&1 | tee "$LOG_FILE"
 
@@ -109,13 +107,13 @@ if [[ "$DO_AGGREGATE" == true ]] && command -v python &>/dev/null; then
 
   python aggregate_replay_results.py \
     --input_dir "$OUTPUT_DIR" \
-    --output "$OUTPUT_DIR/openvla_oft_eval_summary.json" \
+    --output "$OUTPUT_DIR/groot_eval_summary.json" \
     2>&1 | tee "${OUTPUT_DIR}/aggregation.log" || true
 fi
 
 echo ""
 echo "========================================"
-echo "  OpenVLA-OFT constraint violation evaluation complete."
-echo "  Report:   ${OUTPUT_DIR}/replay_constraint_violation_${VICTIM}_from_openpi_pi05.json"
-echo "  Summary:  ${OUTPUT_DIR}/openvla_oft_eval_summary.json"
+echo "  GR00T action inflation evaluation complete."
+echo "  Report:   ${OUTPUT_DIR}/replay_action_inflation_${VICTIM}_from_openpi_pi05.json"
+echo "  Summary:  ${OUTPUT_DIR}/groot_eval_summary.json"
 echo "========================================"

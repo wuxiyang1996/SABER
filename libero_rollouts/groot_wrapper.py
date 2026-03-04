@@ -1,16 +1,20 @@
-"""GR00T N1.6 wrapper for LIBERO evaluation.
+"""GR00T N1.5 wrapper for LIBERO evaluation.
 
-Uses the NVIDIA GR00T-N1.6-3B model via Isaac-GR00T library:
-    nvidia/GR00T-N1.6-3B
+Uses per-suite fine-tuned Tacoin GR00T N1.5-3B checkpoints:
+    Tacoin/GR00T-N1.5-3B-LIBERO-SPATIAL-8K
+    Tacoin/GR00T-N1.5-3B-LIBERO-OBJECT-8K
+    Tacoin/GR00T-N1.5-3B-LIBERO-GOAL-8K
+    Tacoin/GR00T-N1.5-3B-LIBERO-LONG-8K   (maps to libero_10)
 
 Key details:
-    - 3B parameter VLA (Eagle/Cosmos VLM backbone + flow matching DiT action head)
-    - Input: 2 images (256x256) + decomposed state + language instruction
+    - 3B parameter VLA (Eagle backbone + flow matching DiT action head)
+    - Input: 2 images (224x224 after crop/resize) + EEF decomposed state + language
     - Output: per-component action dict, 16-step action chunks
-    - Embodiment tag: LIBERO_PANDA (ID 2)
+    - Embodiment tag: new_embodiment (Tacoin fine-tuned)
     - State decomposition: x,y,z (EEF pos) + roll,pitch,yaw (axis-angle) + gripper (2D)
     - Action: x,y,z,roll,pitch,yaw (6D) + gripper (1D) = 7D per timestep
-    - Runs in vla_smolvla conda env with Isaac-GR00T on PYTHONPATH
+    - Uses Isaac-GR00T N1.5 API (repos/groot_n15)
+    - Runs in vla_smolvla conda env (subprocess isolation)
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+import types
 from typing import Optional
 
 import numpy as np
@@ -26,13 +31,26 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-_GROOT_REPO = os.path.join(os.path.dirname(_THIS_DIR), "repos", "groot")
-if _GROOT_REPO not in sys.path:
-    sys.path.insert(0, _GROOT_REPO)
+_GROOT_N15_REPO = os.path.join(os.path.dirname(_THIS_DIR), "repos", "groot_n15")
+_GROOT_N15_LIBERO = os.path.join(_GROOT_N15_REPO, "examples", "Libero")
 
-_HF_REPO = "nvidia/GR00T-N1.6-3B"
 _IMAGE_SIZE = 256
 _ACTION_HORIZON = 16
+
+
+def _ensure_groot_n15_imports():
+    """Set up sys.path and mock pytorch3d for Isaac-GR00T N1.5 imports."""
+    if "pytorch3d" not in sys.modules:
+        pt3d = types.ModuleType("pytorch3d")
+        pt3d_transforms = types.ModuleType("pytorch3d.transforms")
+        pt3d.transforms = pt3d_transforms
+        sys.modules["pytorch3d"] = pt3d
+        sys.modules["pytorch3d.transforms"] = pt3d_transforms
+
+    if _GROOT_N15_REPO not in sys.path:
+        sys.path.insert(0, _GROOT_N15_REPO)
+    if _GROOT_N15_LIBERO not in sys.path:
+        sys.path.insert(0, _GROOT_N15_LIBERO)
 
 
 def _quat_to_axisangle(quat: np.ndarray) -> np.ndarray:
@@ -54,110 +72,22 @@ def _preprocess_libero_image(img: np.ndarray, size: int = _IMAGE_SIZE) -> np.nda
     return np.array(pil, dtype=np.uint8)
 
 
-_LIBERO_MODALITY_CONFIG = {
-    "video": {
-        "delta_indices": [0],
-        "modality_keys": ["image", "wrist_image"],
-        "sin_cos_embedding_keys": None,
-        "mean_std_embedding_keys": None,
-        "action_configs": None,
-    },
-    "state": {
-        "delta_indices": [0],
-        "modality_keys": ["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
-        "sin_cos_embedding_keys": None,
-        "mean_std_embedding_keys": None,
-        "action_configs": None,
-    },
-    "action": {
-        "delta_indices": list(range(16)),
-        "modality_keys": ["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
-        "sin_cos_embedding_keys": None,
-        "mean_std_embedding_keys": None,
-        "action_configs": [
-            {"rep": "ABSOLUTE", "type": "NON_EEF", "format": "DEFAULT", "state_key": None}
-            for _ in range(7)
-        ],
-    },
-    "language": {
-        "delta_indices": [0],
-        "modality_keys": ["annotation.human.action.task_description"],
-        "sin_cos_embedding_keys": None,
-        "mean_std_embedding_keys": None,
-        "action_configs": None,
-    },
-}
-
-
-def _ensure_libero_modality_config(checkpoint: str) -> None:
-    """Inject libero_panda modality config into the model's cached processor_config.json.
-
-    The base nvidia/GR00T-N1.6-3B model ships without libero_panda configs.
-    We inject them from the test fixtures bundled with Isaac-GR00T.
-    """
-    import json
-    from huggingface_hub import try_to_load_from_cache
-
-    pc_path = try_to_load_from_cache(checkpoint, "processor_config.json")
-    if pc_path is None or isinstance(pc_path, str) and not os.path.isfile(pc_path):
-        return
-
-    with open(pc_path) as f:
-        pc = json.load(f)
-
-    mc = pc.get("processor_kwargs", {}).get("modality_configs", {})
-    if "libero_panda" in mc:
-        return
-
-    mc["libero_panda"] = _LIBERO_MODALITY_CONFIG
-    with open(pc_path, "w") as f:
-        json.dump(pc, f, indent=2)
-    print("[GR00T] Injected libero_panda modality config into processor_config.json")
-
-    # Also inject into statistics.json and embodiment_id.json
-    for fname, key, default in [
-        ("embodiment_id.json", "libero_panda", 2),
-    ]:
-        fpath = try_to_load_from_cache(checkpoint, fname)
-        if fpath and os.path.isfile(fpath):
-            with open(fpath) as f:
-                data = json.load(f)
-            if "libero_panda" not in data:
-                data["libero_panda"] = default
-                with open(fpath, "w") as f:
-                    json.dump(data, f, indent=2)
-
-    stats_path = try_to_load_from_cache(checkpoint, "statistics.json")
-    if stats_path and os.path.isfile(stats_path):
-        with open(stats_path) as f:
-            stats = json.load(f)
-        if "libero_panda" not in stats:
-            fixture_stats = os.path.join(
-                _GROOT_REPO, "tests", "fixtures", "processor_config", "statistics.json"
-            )
-            if os.path.isfile(fixture_stats):
-                with open(fixture_stats) as f:
-                    fix = json.load(f)
-                if "libero_panda" in fix:
-                    stats["libero_panda"] = fix["libero_panda"]
-                    with open(stats_path, "w") as f:
-                        json.dump(stats, f, indent=2)
-
-
 class GR00TWrapper:
     def __init__(
         self,
-        checkpoint: str = _HF_REPO,
+        checkpoint: str = "Tacoin/GR00T-N1.5-3B-LIBERO-SPATIAL-8K",
         suite_name: Optional[str] = None,
         device: str = "cuda:0",
         action_horizon: int = _ACTION_HORIZON,
-        replan_steps: int = 5,
+        replan_steps: int = 8,
     ):
         os.environ.setdefault("HF_HOME", "/workspace/.cache/huggingface")
         os.environ.setdefault("HF_HUB_CACHE", "/workspace/.cache/huggingface/hub")
 
-        from gr00t.data.embodiment_tags import EmbodimentTag
-        from gr00t.policy.gr00t_policy import Gr00tPolicy
+        _ensure_groot_n15_imports()
+
+        from gr00t.model.policy import Gr00tPolicy
+        from custom_data_config import LiberoDataConfig
 
         self.device = device
         self.suite_name = suite_name
@@ -167,19 +97,22 @@ class GR00TWrapper:
 
         self.use_obs_predict = True
 
-        _ensure_libero_modality_config(checkpoint)
+        data_config = LiberoDataConfig()
+        modality_config = data_config.modality_config()
+        modality_transform = data_config.transform()
 
-        print(f"[GR00T] Loading from {checkpoint} on {device} ...")
+        self._action_keys = data_config.action_keys
+
+        print(f"[GR00T-N1.5] Loading from {checkpoint} on {device} ...", file=sys.stderr)
         self.policy = Gr00tPolicy(
-            embodiment_tag=EmbodimentTag.LIBERO_PANDA,
             model_path=checkpoint,
+            embodiment_tag="new_embodiment",
+            modality_config=modality_config,
+            modality_transform=modality_transform,
+            denoising_steps=4,
             device=device,
         )
-        self._modality_configs = self.policy.get_modality_config()
-        self._action_keys = self._modality_configs["action"].modality_keys
-        self._language_key = self._modality_configs["language"].modality_keys[0]
-        print(f"[GR00T] Ready. Action keys: {self._action_keys}, "
-              f"Language key: {self._language_key}")
+        print(f"[GR00T-N1.5] Ready. Action keys: {self._action_keys}", file=sys.stderr)
 
     def set_language(self, instruction: str) -> None:
         self.instruction = instruction
@@ -192,29 +125,24 @@ class GR00TWrapper:
         eef_axisangle: np.ndarray,
         gripper_qpos: np.ndarray,
     ) -> dict:
-        """Build the observation dict expected by Gr00tPolicy.get_action().
+        """Build N1.5 observation dict.
 
-        Video:  dict[key] -> np.ndarray (B=1, T=1, H, W, C) uint8
-        State:  dict[key] -> np.ndarray (B=1, T=1, D) float32
-        Language: dict[key] -> list[list[str]] shape (B=1, 1)
+        Video:  (T=1, H, W, C) uint8
+        State:  (T=1, D) float32 -- gripper is 1D (left finger only)
+        Language: list[str] of length T=1
         """
+        gripper_1d = np.array([[gripper_qpos[0]]], dtype=np.float32)
         obs = {
-            "video": {
-                "image": agentview_image[None, None],       # (1,1,H,W,3)
-                "wrist_image": wrist_image[None, None],     # (1,1,H,W,3)
-            },
-            "state": {
-                "x": np.array([[[eef_pos[0]]]], dtype=np.float32),
-                "y": np.array([[[eef_pos[1]]]], dtype=np.float32),
-                "z": np.array([[[eef_pos[2]]]], dtype=np.float32),
-                "roll": np.array([[[eef_axisangle[0]]]], dtype=np.float32),
-                "pitch": np.array([[[eef_axisangle[1]]]], dtype=np.float32),
-                "yaw": np.array([[[eef_axisangle[2]]]], dtype=np.float32),
-                "gripper": gripper_qpos.astype(np.float32)[None, None],  # (1,1,2)
-            },
-            "language": {
-                self._language_key: [[self.instruction]],
-            },
+            "video.image": agentview_image[None],
+            "video.wrist_image": wrist_image[None],
+            "state.x": np.array([[eef_pos[0]]], dtype=np.float32),
+            "state.y": np.array([[eef_pos[1]]], dtype=np.float32),
+            "state.z": np.array([[eef_pos[2]]], dtype=np.float32),
+            "state.roll": np.array([[eef_axisangle[0]]], dtype=np.float32),
+            "state.pitch": np.array([[eef_axisangle[1]]], dtype=np.float32),
+            "state.yaw": np.array([[eef_axisangle[2]]], dtype=np.float32),
+            "state.gripper": gripper_1d,
+            "annotation.human.action.task_description": [self.instruction],
         }
         return obs
 
@@ -224,15 +152,7 @@ class GR00TWrapper:
         wrist_image: np.ndarray,
         state: np.ndarray,
     ) -> np.ndarray:
-        """Predict actions from preprocessed observations.
-
-        The `state` array is the 8-dim LIBERO state built by build_libero_state():
-        [joint_pos(6?), gripper_qpos(2)] -- but for GR00T we need EEF decomposition.
-
-        NOTE: This method is less ideal for GR00T because the standard
-        predict() interface doesn't include EEF pose. Use predict_from_obs()
-        for best results.
-        """
+        """Predict from preprocessed 224/256 images + 8-dim state."""
         assert self.instruction is not None, "Call set_language() first."
         obs = self._build_observation(
             agentview_image, wrist_image,
@@ -240,11 +160,11 @@ class GR00TWrapper:
             eef_axisangle=state[3:6],
             gripper_qpos=state[6:8],
         )
-        action_dict, _ = self.policy.get_action(obs)
+        action_dict = self.policy.get_action(obs)
         return self._concat_actions(action_dict)
 
     def predict_from_obs(self, obs: dict) -> np.ndarray:
-        """Predict actions directly from raw LIBERO observation dict."""
+        """Predict from raw LIBERO observation dict."""
         assert self.instruction is not None, "Call set_language() first."
 
         agentview = _preprocess_libero_image(obs["agentview_image"])
@@ -256,33 +176,27 @@ class GR00TWrapper:
         groot_obs = self._build_observation(
             agentview, wrist, eef_pos, eef_axisangle, gripper_qpos,
         )
-        action_dict, _ = self.policy.get_action(groot_obs)
+        action_dict = self.policy.get_action(groot_obs)
         return self._concat_actions(action_dict)
 
     def _concat_actions(self, action_dict: dict) -> np.ndarray:
         """Concatenate per-component actions into (T, 7) array.
 
-        GR00T returns: dict[key] -> (B=1, T=16, D) float32
-        We need: (T, 7) float64
+        N1.5 get_action() denormalizes to the original training data space:
+        - position/rotation: controller-space deltas (roughly [-1, 1])
+        - gripper: [-1, 1] where -1=open, +1=close (matches LIBERO env)
 
-        Matches the official Isaac-GR00T LiberoEnv.step() post-processing:
-        gripper is normalized from [0,1] to [-1,+1] then sign-inverted so that
-        the raw LIBERO env receives +1=close, -1=open.
+        We just binarize the gripper for clean discrete control.
         """
         components = []
         for key in self._action_keys:
-            arr = action_dict[key]            # (B, T, D)
-            components.append(arr[0])         # (T, D)
-        actions = np.concatenate(components, axis=-1)  # (T, 7)
-        actions = actions.astype(np.float64)
+            arr = np.atleast_2d(action_dict[key])
+            components.append(arr)
+        actions = np.concatenate(components, axis=-1).astype(np.float64)
 
-        # Gripper post-processing (matches official libero_env.py)
-        actions[..., -1] = 2.0 * actions[..., -1] - 1.0   # [0,1] -> [-1,+1]
-        actions[..., -1] = np.sign(actions[..., -1])       # binarize
-        actions[..., -1] = -actions[..., -1]               # invert
+        actions[..., -1] = np.sign(actions[..., -1])
 
         return actions
 
     def reset(self) -> None:
         self.instruction = None
-        self.policy.reset()

@@ -58,6 +58,15 @@ class SubprocessVLAWrapper:
         env.setdefault("HF_HUB_CACHE", "/workspace/.cache/huggingface/hub")
         env.setdefault("HF_LEROBOT_HOME", "/workspace/.cache/lerobot")
 
+        # Limit CPU threading — inference runs on GPU so 1-2 threads suffice.
+        # Without this, TensorFlow/PyTorch/OpenBLAS each spawn N-core thread
+        # pools per subprocess, causing massive CPU contention.
+        env.setdefault("OMP_NUM_THREADS", "2")
+        env.setdefault("MKL_NUM_THREADS", "2")
+        env.setdefault("OPENBLAS_NUM_THREADS", "2")
+        env.setdefault("TF_NUM_INTRAOP_THREADS", "1")
+        env.setdefault("TF_NUM_INTEROP_THREADS", "1")
+
         # Prevent the subprocess server from spawning yet another subprocess.
         env["_VLA_SUBPROCESS_SERVER"] = "1"
 
@@ -81,6 +90,16 @@ class SubprocessVLAWrapper:
         if os.path.isdir(groot_repo):
             pp = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = f"{groot_repo}:{pp}" if pp else groot_repo
+
+        # Add openvla-mini repo to PYTHONPATH for InspireVLA (Prismatic) loading
+        openvla_mini_repo = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "repos", "openvla_mini",
+        )
+        if os.path.isdir(openvla_mini_repo):
+            pp = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = f"{openvla_mini_repo}:{pp}" if pp else openvla_mini_repo
+            env.setdefault("PRISMATIC_DATA_ROOT", "/tmp")
 
         self._proc = subprocess.Popen(
             [python, _SERVER_SCRIPT],
@@ -141,9 +160,9 @@ class SubprocessVLAWrapper:
     ) -> np.ndarray:
         resp = self._call({
             "cmd": "predict",
-            "agentview": agentview_image.tolist(),
-            "wrist": wrist_image.tolist(),
-            "state": state.tolist(),
+            "agentview": np.ascontiguousarray(agentview_image, dtype=np.uint8),
+            "wrist": np.ascontiguousarray(wrist_image, dtype=np.uint8),
+            "state": np.ascontiguousarray(state, dtype=np.float64),
         })
         return np.array(resp["action"], dtype=np.float64).reshape(resp["action_shape"])
 

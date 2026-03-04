@@ -96,9 +96,9 @@ def main():
 
             elif cmd == "predict":
                 import numpy as _np
-                _agentview = _np.array(req["agentview"], dtype=_np.uint8)
-                _wrist = _np.array(req["wrist"], dtype=_np.uint8)
-                _state = _np.array(req["state"], dtype=_np.float64)
+                _agentview = _np.asarray(req["agentview"], dtype=_np.uint8)
+                _wrist = _np.asarray(req["wrist"], dtype=_np.uint8)
+                _state = _np.asarray(req["state"], dtype=_np.float64)
                 action = model.predict(_agentview, _wrist, _state)
                 _send(_real_stdout, {
                     "status": "ok",

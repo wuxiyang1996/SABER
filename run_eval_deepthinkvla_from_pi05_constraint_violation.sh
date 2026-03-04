@@ -87,6 +87,7 @@ python eval_replay_attack.py \
   --attack_record "$ATTACK_RECORD" \
   --seed "$SEED" \
   --replan_steps "$REPLAN_STEPS" \
+  --episodes_per_task 5 \
   --output_dir "$OUTPUT_DIR" \
   2>&1 | tee "$LOG_FILE"
 

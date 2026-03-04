@@ -36,7 +36,7 @@ export PYTHONUTF8=1
 
 # ---- Defaults ----
 SEED=42
-REPLAN_STEPS=5
+REPLAN_STEPS=1
 VLA_GPU=3
 DO_AGGREGATE=true
 

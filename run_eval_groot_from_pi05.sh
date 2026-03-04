@@ -1,20 +1,11 @@
 #!/usr/bin/env bash
-# Evaluate GR00T N1.6-3B on LIBERO using pre-recorded attack prompts from openpi_pi05.
+# Evaluate GR00T N1.5-3B (Tacoin fine-tuned) on LIBERO — task failure attack records from openpi_pi05.
 #
-# Reads original_instruction / perturbed_instruction from the openpi_pi05 attack
-# record, cross-checks original_instruction against LIBERO ground truth, and runs
-# GR00T twice per episode (baseline + attack).
-#
-# Output goes to outputs/eval_result/ in the same JSON format as the recorded replay.
-#
-# GR00T specifics:
-#   - 3B param VLA (Eagle VLM backbone + flow matching DiT action head)
-#   - LeRobot framework (lerobot >= 0.4)
-#   - Input: 2 images (256x256) + 8-dim state + language
-#   - Output: 7-dim action, 16-step action chunks
-#   - Single checkpoint: nvidia/GR00T-N1.6-3B (all suites, cross-embodiment)
-#   - Embodiment ID 2 (libero_panda / so100)
-#   - Runs in vla_smolvla conda env (subprocess isolation)
+# Per-suite Tacoin checkpoints:
+#   libero_spatial -> Tacoin/GR00T-N1.5-3B-LIBERO-SPATIAL-8K
+#   libero_object  -> Tacoin/GR00T-N1.5-3B-LIBERO-OBJECT-8K
+#   libero_goal    -> Tacoin/GR00T-N1.5-3B-LIBERO-GOAL-8K
+#   libero_10      -> Tacoin/GR00T-N1.5-3B-LIBERO-LONG-8K
 #
 # Usage:
 #   bash run_eval_groot_from_pi05.sh                 # GPU 3
@@ -35,7 +26,6 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export PYTHONUTF8=1
 
-# Redirect HF and torch caches to /workspace to avoid root fs space issues
 export HF_HOME=/workspace/.cache/huggingface
 export HF_HUB_CACHE=/workspace/.cache/huggingface/hub
 export TORCH_HOME=/workspace/.cache_torch
@@ -84,9 +74,8 @@ SOURCE_NAME=$(basename "$ATTACK_RECORD" .json)
 LOG_FILE="${OUTPUT_DIR}/${VICTIM}_from_${SOURCE_NAME}.log"
 
 echo "========================================"
-echo "  GR00T N1.6 Replay Attack Evaluation"
+echo "  GR00T N1.5 Task Failure Replay Eval"
 echo "  Victim:  ${VICTIM}"
-echo "  HF:      nvidia/GR00T-N1.6-3B"
 echo "  Source:  ${ATTACK_RECORD}"
 echo "  GPU:     ${VLA_GPU}"
 echo "  Seed:    ${SEED}"
@@ -124,7 +113,7 @@ fi
 
 echo ""
 echo "========================================"
-echo "  GR00T evaluation complete."
+echo "  GR00T task failure evaluation complete."
 echo "  Report:   ${OUTPUT_DIR}/replay_task_failure_${VICTIM}_from_openpi_pi05.json"
 echo "  Summary:  ${OUTPUT_DIR}/groot_eval_summary.json"
 echo "========================================"

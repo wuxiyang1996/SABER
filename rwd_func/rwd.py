@@ -2300,6 +2300,7 @@ def collect_libero_rollout_info(
     contact_force_threshold: float = 50.0,
     early_stop_on_success: bool = True,
     success_hold_steps: int = 10,
+    store_observations: bool = True,
 ) -> VLARolloutInfo:
     """Run a VLA policy in a LIBERO environment and collect all reward signals.
 
@@ -2369,7 +2370,8 @@ def collect_libero_rollout_info(
 
         # --- Execute step ---
         obs, reward, done, env_step_info = env.step(action)
-        info.observations.append(obs)
+        if store_observations:
+            info.observations.append(obs)
         step += 1
 
         # --- Post-step: extract constraint signals from MuJoCo sim ---

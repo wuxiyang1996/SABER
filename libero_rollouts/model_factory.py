@@ -47,8 +47,8 @@ _SUITE_CHECKPOINTS = {
     },
     "internvla_m1": {
         "libero_spatial": "InternRobotics/InternVLA-M1-LIBERO-Spatial",
-        "libero_object": "InternRobotics/InternVLA-M1",
-        "libero_goal": "InternRobotics/InternVLA-M1",
+        "libero_object": "InternRobotics/InternVLA-M1-LIBERO-Object",
+        "libero_goal": "InternRobotics/InternVLA-M1-LIBERO-Goal",
         "libero_10": "InternRobotics/InternVLA-M1-LIBERO-Long",
     },
     "xvla": {
@@ -61,7 +61,19 @@ _SUITE_CHECKPOINTS = {
         "_all": "HuggingFaceVLA/smolvla_libero",
     },
     "groot": {
-        "_all": "nvidia/GR00T-N1.6-3B",
+        "libero_spatial": "Tacoin/GR00T-N1.5-3B-LIBERO-SPATIAL-8K",
+        "libero_object": "Tacoin/GR00T-N1.5-3B-LIBERO-OBJECT-8K",
+        "libero_goal": "Tacoin/GR00T-N1.5-3B-LIBERO-GOAL-8K",
+        "libero_10": "Tacoin/GR00T-N1.5-3B-LIBERO-LONG-8K",
+    },
+    "inspirevla": {
+        "_all": "InspireVLA/minivla-inspire-libero-union4",
+    },
+    "minivla": {
+        "_all": "Stanford-ILIAD/minivla-libero90-prismatic",
+    },
+    "go1": {
+        "_all": "127.0.0.1:9000",  # AgiBot-World GO-1 server URL (override with GO1_SERVER env)
     },
 }
 
@@ -80,6 +92,9 @@ _MODEL_ACTION_HORIZONS = {
     "openvla_oft": 8,
     "smolvla": 1,
     "groot": 16,
+    "inspirevla": 1,
+    "minivla": 1,
+    "go1": 5,
 }
 
 # Aliases for victim/model names (e.g. open_pi0.5 -> openpi_pi05)
@@ -116,6 +131,7 @@ def get_action_horizon(model_id: str) -> int:
 _SUBPROCESS_MODELS = {
     "openvla", "lightvla", "ecot", "deepthinkvla", "deepthinkvla_eval",
     "molmoact", "internvla_m1", "xvla", "openvla_oft", "smolvla", "groot",
+    "inspirevla", "minivla",
 }
 
 _ABSOLUTE_ACTION_MODELS = {"xvla"}
@@ -127,6 +143,10 @@ _OBS_PREDICT_MODELS = {
     "xvla",       # absolute EE actions, needs raw obs for controller state
     "smolvla",    # trained at 256x256 (not 224x224)
     "openvla_oft", # needs JPEG round-trip to match RLDS training pipeline
+    "groot",      # trained at 256x256, needs raw obs for EEF decomposition
+    "go1",        # AgiBot client: send 256x256 images to match their eval
+    "inspirevla", # openvla-mini uses flipud, not 180° rotation
+    "minivla",    # openvla-mini uses flipud, not 180° rotation
 }
 
 
@@ -142,6 +162,8 @@ _MODEL_ENV_MAP = {
     "openvla_oft": "vla_models",
     "smolvla": "vla_smolvla",
     "groot": "vla_smolvla",
+    "inspirevla": "vla_inspirevla",
+    "minivla": "vla_inspirevla",
 }
 
 
@@ -322,9 +344,24 @@ def load_vla_model(
             action_horizon=action_horizon, replan_steps=replan_steps,
         )
 
+    if key in ("inspirevla", "minivla"):
+        from inspirevla_wrapper import InspireVLAWrapper
+        return InspireVLAWrapper(
+            checkpoint=ckpt, suite_name=suite_name, device=device,
+            action_horizon=action_horizon, replan_steps=replan_steps,
+        )
+
+    if key == "go1":
+        from go1_client_wrapper import GO1ClientWrapper
+        return GO1ClientWrapper(
+            checkpoint=ckpt, suite_name=suite_name, device=device,
+            action_horizon=action_horizon, replan_steps=replan_steps,
+        )
+
     raise ValueError(
         f"Unknown model: {model_id}. Supported: openpi_pi0, openpi_pi05, "
-        "openvla, openvla_oft, ecot, lightvla, deepthinkvla, molmoact, internvla_m1, xvla, smolvla, groot"
+        "openvla, openvla_oft, ecot, lightvla, deepthinkvla, molmoact, internvla_m1, "
+        "xvla, smolvla, groot, inspirevla, minivla, go1"
     )
 
 

@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
-# Evaluate OpenVLA-OFT on LIBERO using pre-recorded constraint-violation attack prompts from openpi_pi05.
+# Evaluate DeepThinkVLA on LIBERO using pre-recorded action-inflation attack prompts from openpi_pi0.
 #
-# Reads original_instruction / perturbed_instruction from the openpi_pi05 constraint
-# violation attack record, cross-checks original_instruction against LIBERO ground
-# truth, and runs OpenVLA-OFT twice per episode (baseline + attack).
+# Reads original_instruction / perturbed_instruction from the openpi_pi0 action
+# inflation attack record, cross-checks original_instruction against LIBERO ground
+# truth, and runs DeepThinkVLA twice per episode (baseline + attack).
 #
 # Output goes to outputs/eval_result/ in the same JSON format as the recorded replay.
 #
-# OpenVLA-OFT specifics:
-#   - Uses continuous L1 regression action head (not discrete tokens)
-#   - Proprioceptive state projected into LLM embedding space
-#   - Two images: agentview + wrist camera
-#   - Action chunking: 8 actions per inference call
-#   - Single checkpoint for all suites:
-#       moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10
-#   - Runs in vla_models conda env (subprocess isolation)
+# Environment:
+#   - runpod env:      Main process (LIBERO env, orchestration)
+#   - vla_models env:  DeepThinkVLA (subprocess, loaded via model_factory)
 #
 # Usage:
-#   bash run_eval_openvla_oft_from_pi05_constraint_violation.sh                 # GPU 3
-#   bash run_eval_openvla_oft_from_pi05_constraint_violation.sh --gpu 1         # GPU 1
-#   bash run_eval_openvla_oft_from_pi05_constraint_violation.sh --no-aggregate  # skip aggregation
+#   bash run_eval_deepthinkvla_from_pi0_action_inflation.sh                 # GPU 0
+#   bash run_eval_deepthinkvla_from_pi0_action_inflation.sh --gpu 1         # GPU 1
+#   bash run_eval_deepthinkvla_from_pi0_action_inflation.sh --no-aggregate  # skip aggregation
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -38,11 +33,11 @@ export PYTHONUTF8=1
 # ---- Defaults ----
 SEED=42
 REPLAN_STEPS=5
-VLA_GPU=3
+VLA_GPU=0
 DO_AGGREGATE=true
 
-VICTIM="openvla_oft"
-ATTACK_RECORD="outputs/agent_output_records_constraint_violation/constraint_violation_openpi_pi05.json"
+VICTIM="deepthinkvla"
+ATTACK_RECORD="outputs/agent_output_records_action_inflation/action_inflation_openpi_pi0.json"
 OUTPUT_DIR="outputs/eval_result"
 
 # ---- Parse flags ----
@@ -76,9 +71,8 @@ SOURCE_NAME=$(basename "$ATTACK_RECORD" .json)
 LOG_FILE="${OUTPUT_DIR}/${VICTIM}_from_${SOURCE_NAME}.log"
 
 echo "========================================"
-echo "  OpenVLA-OFT Constraint Violation Replay Attack Evaluation"
+echo "  DeepThinkVLA Action Inflation Replay Attack Evaluation"
 echo "  Victim:  ${VICTIM}"
-echo "  HF:      moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10"
 echo "  Source:  ${ATTACK_RECORD}"
 echo "  GPU:     ${VLA_GPU}"
 echo "  Seed:    ${SEED}"
@@ -109,13 +103,13 @@ if [[ "$DO_AGGREGATE" == true ]] && command -v python &>/dev/null; then
 
   python aggregate_replay_results.py \
     --input_dir "$OUTPUT_DIR" \
-    --output "$OUTPUT_DIR/openvla_oft_eval_summary.json" \
+    --output "$OUTPUT_DIR/deepthinkvla_eval_summary.json" \
     2>&1 | tee "${OUTPUT_DIR}/aggregation.log" || true
 fi
 
 echo ""
 echo "========================================"
-echo "  OpenVLA-OFT constraint violation evaluation complete."
-echo "  Report:   ${OUTPUT_DIR}/replay_constraint_violation_${VICTIM}_from_openpi_pi05.json"
-echo "  Summary:  ${OUTPUT_DIR}/openvla_oft_eval_summary.json"
+echo "  DeepThinkVLA action inflation evaluation complete."
+echo "  Report:   ${OUTPUT_DIR}/replay_action_inflation_${VICTIM}_from_openpi_pi0.json"
+echo "  Summary:  ${OUTPUT_DIR}/deepthinkvla_eval_summary.json"
 echo "========================================"

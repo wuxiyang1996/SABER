@@ -307,6 +307,82 @@ print('  [OK] InternVLAWrapper importable')
 }
 
 # ============================================================================
+# ENV 4: vla_inspirevla — InspireVLA (minivla-inspire-libero-union4)
+# ============================================================================
+setup_vla_inspirevla() {
+    local ENV_NAME="vla_inspirevla"
+    echo ""
+    echo "========================================"
+    echo "  Setting up: ${ENV_NAME}"
+    echo "  Models: InspireVLA (minivla-inspire-libero-union4)"
+    echo "  Same base as vla_models; add openvla-mini for .pt checkpoint inference."
+    echo "========================================"
+
+    if conda env list | grep -q "^${ENV_NAME} "; then
+        echo "  Environment '${ENV_NAME}' already exists. Updating..."
+        conda activate "${ENV_NAME}"
+    else
+        echo "  Creating conda env '${ENV_NAME}' (Python 3.11)..."
+        conda create -n "${ENV_NAME}" python=3.11 -y
+        conda activate "${ENV_NAME}"
+
+        conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
+
+        pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 \
+            --index-url "${PYTORCH_INDEX}"
+    fi
+
+    pip install --upgrade \
+        "transformers>=4.41,<4.42" \
+        "accelerate>=1.0" \
+        "timm>=1.0" \
+        "pillow>=10.0" \
+        "numpy>=2" \
+        "scipy" \
+        "scikit-image" \
+        "opencv-python-headless" \
+        "h5py" \
+        "einops" \
+        "sentencepiece" \
+        "safetensors" \
+        "huggingface_hub>=0.20" \
+        "imageio" \
+        "mujoco>=3.0" \
+        "robosuite==1.4.0" \
+        "bddl>=3.0" \
+        "easydict" \
+        "gym==0.26.2" \
+        "PyOpenGL" \
+        "glfw" \
+        "matplotlib"
+
+    install_libero
+    patch_libero_torch_load
+
+    # Install openvla-mini (Prismatic) dependencies for InspireVLA inference
+    local OPENVLA_MINI_REPO="${FRAMEWORK_DIR}/repos/openvla_mini"
+    if [[ ! -d "${OPENVLA_MINI_REPO}" ]]; then
+        echo "  Cloning openvla-mini repo..."
+        git clone --depth 1 https://github.com/Stanford-ILIAD/openvla-mini.git "${OPENVLA_MINI_REPO}"
+    fi
+
+    echo "  Installing Prismatic inference dependencies..."
+    pip install --upgrade \
+        "draccus==0.8.0" \
+        "rich" \
+        "jsonlines" \
+        "json-numpy" \
+        "timm==0.9.10" \
+        "tensorflow==2.15.0" \
+        "tensorflow_datasets==4.9.3" \
+        "tensorflow_graphics==2021.12.3" \
+        "dlimp @ git+https://github.com/moojink/dlimp_openvla" \
+        2>/dev/null || echo "  [WARN] Some Prismatic deps failed (non-critical)"
+
+    echo "  Done: ${ENV_NAME}"
+}
+
+# ============================================================================
 # Main dispatcher
 # ============================================================================
 
@@ -325,14 +401,18 @@ case "$TARGET" in
     vla_internvla)
         setup_vla_internvla
         ;;
+    vla_inspirevla)
+        setup_vla_inspirevla
+        ;;
     all)
         setup_vla_models
         setup_vla_molmoact
         setup_vla_internvla
+        setup_vla_inspirevla
         ;;
     *)
         echo "ERROR: Unknown target '${TARGET}'."
-        echo "Usage: bash scripts/setup_vla_envs.sh [vla_models|vla_molmoact|vla_internvla|all]"
+        echo "Usage: bash scripts/setup_vla_envs.sh [vla_models|vla_molmoact|vla_internvla|vla_inspirevla|all]"
         exit 1
         ;;
 esac
@@ -348,6 +428,7 @@ echo "    ECoT         → vla_models"
 echo "    DeepThinkVLA → vla_models"
 echo "    MolmoAct     → vla_molmoact"
 echo "    InternVLA-M1 → vla_internvla"
+echo "    InspireVLA   → vla_inspirevla"
 echo "    Pi0 / Pi0.5  → runpod (in-process, JAX)"
 echo ""
 echo "  To run replay eval:"

@@ -161,7 +161,8 @@ def make_generic_policy_fn(vla_model, instruction, replan_steps=5, is_jax=False,
 
 
 def run_vla_episode(env, initial_states, vla_model, instruction, episode_idx,
-                    max_steps, replan_steps, is_jax=False, vla_lock=None):
+                    max_steps, replan_steps, is_jax=False, vla_lock=None,
+                    fast=False):
     from rwd_func.rwd import collect_libero_rollout_info
 
     obs = _reset_env(env, initial_states, episode_idx)
@@ -181,6 +182,9 @@ def run_vla_episode(env, initial_states, vla_model, instruction, episode_idx,
         instruction=instruction,
         observation=obs,
         max_steps=max_steps,
+        collect_predicates=not fast,
+        scene_snapshot_interval=0 if fast else 25,
+        store_observations=not fast,
     )
 
 
@@ -210,8 +214,24 @@ def evaluate_replay(args):
     logger.info("  Source record:    %s", args.attack_record)
     logger.info("  Source victim:    %s", source_victim)
     logger.info("  Source objective: %s", source_objective)
-    logger.info("  Episodes:        %d", len(episodes))
+    episodes_per_task = getattr(args, "episodes_per_task", None)
+    logger.info("  Record entries:  %d", len(episodes))
+    if episodes_per_task:
+        logger.info("  Episodes/task:   %d (override)", episodes_per_task)
     logger.info("  Seed:            %d", args.seed)
+
+    num_workers = getattr(args, "num_workers", 1) or 1
+    worker_id = getattr(args, "worker_id", 0) or 0
+    fast_mode = getattr(args, "fast", False)
+    if num_workers > 1:
+        logger.info("  Worker:          %d / %d", worker_id, num_workers)
+    if fast_mode:
+        logger.info("  Fast mode:       ON (skip predicates/snapshots/obs storage)")
+
+    # Filter episodes for this worker
+    if num_workers > 1:
+        episodes = [ep for i, ep in enumerate(episodes) if i % num_workers == worker_id]
+        logger.info("  Episodes (this worker): %d", len(episodes))
 
     # Load JAX model once (not per-suite)
     vla_model = None
@@ -239,7 +259,8 @@ def evaluate_replay(args):
 
     per_episode_results = []
     t0 = time.time()
-    total = len(episodes)
+    ep_multiplier = episodes_per_task if episodes_per_task else 1
+    total = len(episodes) * ep_multiplier
     done = 0
     current_suite = None
 
@@ -271,96 +292,97 @@ def evaluate_replay(args):
 
         for ep in suite_eps:
             task_id = ep["task_id"]
-            episode_idx = ep["episode_idx"]
             original_instruction = ep["original_instruction"]
             perturbed_instruction = ep["perturbed_instruction"]
             source_tools = ep.get("tools_used", [])
 
-            logger.info(
-                "  [%d/%d] %s task %d ep %d ...",
-                done + 1, total, suite_name, task_id, episode_idx,
-            )
+            ep_indices = list(range(episodes_per_task)) if episodes_per_task else [ep["episode_idx"]]
 
-            # Create environment and cross-check instruction against LIBERO
-            env, initial_states, libero_instruction = _create_libero_env(
-                suite_name, task_id, args.seed,
-            )
-
-            if libero_instruction != original_instruction:
-                logger.warning(
-                    "    Instruction mismatch for %s task %d: "
-                    "record='%s' vs libero='%s'",
-                    suite_name, task_id, original_instruction, libero_instruction,
+            for episode_idx in ep_indices:
+                logger.info(
+                    "  [%d/%d] %s task %d ep %d ...",
+                    done + 1, total, suite_name, task_id, episode_idx,
                 )
 
-            # BASELINE rollout
-            baseline_info = run_vla_episode(
-                env, initial_states, vla_model,
-                original_instruction, episode_idx, max_steps,
-                args.replan_steps, is_jax=vla_is_jax, vla_lock=vla_lock,
-            )
+                env, initial_states, libero_instruction = _create_libero_env(
+                    suite_name, task_id, args.seed,
+                )
 
-            # ATTACK rollout (with perturbed instruction)
-            attack_info = run_vla_episode(
-                env, initial_states, vla_model,
-                perturbed_instruction, episode_idx, max_steps,
-                args.replan_steps, is_jax=vla_is_jax, vla_lock=vla_lock,
-            )
+                if libero_instruction != original_instruction:
+                    logger.warning(
+                        "    Instruction mismatch for %s task %d: "
+                        "record='%s' vs libero='%s'",
+                        suite_name, task_id, original_instruction, libero_instruction,
+                    )
 
-            chars_changed = int(edit_distance(original_instruction, perturbed_instruction))
-            flipped = baseline_info.task_success and not attack_info.task_success
+                baseline_info = run_vla_episode(
+                    env, initial_states, vla_model,
+                    original_instruction, episode_idx, max_steps,
+                    args.replan_steps, is_jax=vla_is_jax, vla_lock=vla_lock,
+                    fast=fast_mode,
+                )
 
-            bl_col = float(baseline_info.collision_count)
-            bl_jl = float(baseline_info.joint_limit_violations)
-            bl_ef = float(baseline_info.excessive_force_count)
-            atk_col = float(attack_info.collision_count)
-            atk_jl = float(attack_info.joint_limit_violations)
-            atk_ef = float(attack_info.excessive_force_count)
+                attack_info = run_vla_episode(
+                    env, initial_states, vla_model,
+                    perturbed_instruction, episode_idx, max_steps,
+                    args.replan_steps, is_jax=vla_is_jax, vla_lock=vla_lock,
+                    fast=fast_mode,
+                )
 
-            result = {
-                "task_suite": suite_name,
-                "task_id": task_id,
-                "episode_idx": episode_idx,
-                "original_instruction": original_instruction,
-                "perturbed_instruction": perturbed_instruction,
-                "tools_used": source_tools,
-                "num_tool_calls": len(source_tools),
-                "chars_changed": chars_changed,
-                "flipped": flipped,
-                "baseline": {
-                    "success": bool(baseline_info.task_success),
-                    "steps": int(baseline_info.num_steps),
-                    "constraint_violations": bl_col + bl_jl + bl_ef,
-                    "collisions": bl_col,
-                    "joint_limit_violations": bl_jl,
-                    "excessive_force": bl_ef,
-                },
-                "attack": {
-                    "success": bool(attack_info.task_success),
-                    "steps": int(attack_info.num_steps),
-                    "constraint_violations": atk_col + atk_jl + atk_ef,
-                    "collisions": atk_col,
-                    "joint_limit_violations": atk_jl,
-                    "excessive_force": atk_ef,
-                },
-            }
-            per_episode_results.append(result)
+                chars_changed = int(edit_distance(original_instruction, perturbed_instruction))
+                flipped = baseline_info.task_success and not attack_info.task_success
 
-            logger.info(
-                "    baseline=%s(%d) attack=%s(%d) flipped=%s",
-                "PASS" if baseline_info.task_success else "FAIL",
-                baseline_info.num_steps,
-                "PASS" if attack_info.task_success else "FAIL",
-                attack_info.num_steps,
-                "YES" if flipped else "no",
-            )
+                bl_col = float(baseline_info.collision_count)
+                bl_jl = float(baseline_info.joint_limit_violations)
+                bl_ef = float(baseline_info.excessive_force_count)
+                atk_col = float(attack_info.collision_count)
+                atk_jl = float(attack_info.joint_limit_violations)
+                atk_ef = float(attack_info.excessive_force_count)
 
-            try:
-                env.close()
-            except Exception:
-                pass
+                result = {
+                    "task_suite": suite_name,
+                    "task_id": task_id,
+                    "episode_idx": episode_idx,
+                    "original_instruction": original_instruction,
+                    "perturbed_instruction": perturbed_instruction,
+                    "tools_used": source_tools,
+                    "num_tool_calls": len(source_tools),
+                    "chars_changed": chars_changed,
+                    "flipped": flipped,
+                    "baseline": {
+                        "success": bool(baseline_info.task_success),
+                        "steps": int(baseline_info.num_steps),
+                        "constraint_violations": bl_col + bl_jl + bl_ef,
+                        "collisions": bl_col,
+                        "joint_limit_violations": bl_jl,
+                        "excessive_force": bl_ef,
+                    },
+                    "attack": {
+                        "success": bool(attack_info.task_success),
+                        "steps": int(attack_info.num_steps),
+                        "constraint_violations": atk_col + atk_jl + atk_ef,
+                        "collisions": atk_col,
+                        "joint_limit_violations": atk_jl,
+                        "excessive_force": atk_ef,
+                    },
+                }
+                per_episode_results.append(result)
 
-            done += 1
+                logger.info(
+                    "    baseline=%s(%d) attack=%s(%d) flipped=%s",
+                    "PASS" if baseline_info.task_success else "FAIL",
+                    baseline_info.num_steps,
+                    "PASS" if attack_info.task_success else "FAIL",
+                    attack_info.num_steps,
+                    "YES" if flipped else "no",
+                )
+
+                try:
+                    env.close()
+                except Exception:
+                    pass
+
+                done += 1
 
     elapsed = time.time() - t0
     logger.info("Replay evaluation done: %d episodes in %.1fs", total, elapsed)
@@ -444,7 +466,10 @@ def evaluate_replay(args):
     # --- Save report ---
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     source_tag = os.path.splitext(os.path.basename(args.attack_record))[0]
-    report_name = f"replay_{source_objective}_{victim_id}_from_{source_victim}.json"
+    if num_workers > 1:
+        report_name = f"replay_{source_objective}_{victim_id}_from_{source_victim}_w{worker_id}.json"
+    else:
+        report_name = f"replay_{source_objective}_{victim_id}_from_{source_victim}.json"
 
     report = {
         "config": {
@@ -455,6 +480,7 @@ def evaluate_replay(args):
             "source_attack_model": record["config"].get("attack_model", ""),
             "seed": args.seed,
             "replan_steps": args.replan_steps,
+            "episodes_per_task": episodes_per_task,
             "elapsed_seconds": elapsed,
             "timestamp": timestamp,
         },
@@ -542,6 +568,23 @@ def main():
         help="Override max episode steps for all suites (official GR00T eval uses 720).",
     )
     parser.add_argument("--output_dir", type=str, default="outputs/replay_eval_task_failure")
+    parser.add_argument(
+        "--episodes_per_task", type=int, default=None,
+        help="Run each perturbed instruction across N initial states (episode_idx 0..N-1). "
+             "If not set, uses the episode_idx from the attack record as-is.",
+    )
+    parser.add_argument(
+        "--num_workers", type=int, default=1,
+        help="Total number of parallel workers. Each processes a 1/N slice of episodes.",
+    )
+    parser.add_argument(
+        "--worker_id", type=int, default=0,
+        help="This worker's index (0-based). Processes episodes where index %% num_workers == worker_id.",
+    )
+    parser.add_argument(
+        "--fast", action="store_true",
+        help="Skip predicate collection, scene snapshots, and observation storage for speed.",
+    )
 
     args = parser.parse_args()
 
