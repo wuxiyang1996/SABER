@@ -66,15 +66,26 @@ def _count_chars(text: str) -> int:
     return len(text)
 
 
-def _enforce_budget(added_text: str, max_chars: int) -> str:
-    """Truncate added_text to at most max_chars characters (on word boundaries)."""
+def _enforce_budget(added_text: str, max_chars: int) -> tuple[str, bool]:
+    """Truncate *added_text* to at most *max_chars* characters.
+
+    Returns ``(text, was_truncated)`` so callers can surface a warning.
+
+    Prefers cutting at sentence boundaries so the result reads as
+    complete sentences.  Skips false positives like "1. " or "2. "
+    (numbered-list items).  Falls back to word boundaries.
+    """
+    import re
     if len(added_text) <= max_chars:
-        return added_text
+        return added_text, False
     truncated = added_text[:max_chars]
+    # Find real sentence endings: ". " / "! " / "? " NOT preceded by a digit
+    for m in reversed(list(re.finditer(r'(?<!\d)[.!?] ', truncated))):
+        return truncated[:m.start() + 1], True
     last_space = truncated.rfind(" ")
     if last_space > 0:
         truncated = truncated[:last_space]
-    return truncated
+    return truncated, True
 
 
 def _numbered_token_list(text: str) -> list[dict]:
@@ -164,7 +175,7 @@ def apply_verify_wrap(
         dict with: original, perturbed, clause, position, added_chars,
                    action, attack_type.
     """
-    clause = _enforce_budget(clause, max_added_chars)
+    clause, was_truncated = _enforce_budget(clause, max_added_chars)
     clause = _ensure_trailing_period(clause)
     added_chars = _count_chars(clause)
 
@@ -174,7 +185,7 @@ def apply_verify_wrap(
         base = _ensure_trailing_period(text)
         perturbed = base + " " + clause
 
-    return {
+    result = {
         "original": text,
         "perturbed": perturbed,
         "clause": clause,
@@ -183,6 +194,12 @@ def apply_verify_wrap(
         "action": "verify_wrap",
         "attack_type": "verify_wrap",
     }
+    if was_truncated:
+        result["warning"] = (
+            f"Your clause was truncated to fit the {max_added_chars}-char "
+            f"per-call budget. Write shorter text to avoid cut-off sentences."
+        )
+    return result
 
 
 # ============================================================================
@@ -250,7 +267,7 @@ def apply_decompose_wrap(
         dict with: original, perturbed, steps, mode, added_chars,
                    action, attack_type.
     """
-    steps = _enforce_budget(steps, max_added_chars)
+    steps, was_truncated = _enforce_budget(steps, max_added_chars)
 
     if mode == "replace":
         perturbed = steps
@@ -261,7 +278,7 @@ def apply_decompose_wrap(
 
     added_chars = _count_chars(perturbed) - _count_chars(text)
 
-    return {
+    result = {
         "original": text,
         "perturbed": perturbed,
         "steps": steps,
@@ -270,6 +287,12 @@ def apply_decompose_wrap(
         "action": "decompose_wrap",
         "attack_type": "decompose_wrap",
     }
+    if was_truncated:
+        result["warning"] = (
+            f"Your steps text was truncated to fit the {max_added_chars}-char "
+            f"per-call budget. Write shorter steps to avoid cut-off sentences."
+        )
+    return result
 
 
 # ============================================================================
@@ -338,14 +361,14 @@ def apply_uncertainty_clause(
         dict with: original, perturbed, clause, added_chars,
                    action, attack_type.
     """
-    clause = _enforce_budget(clause, max_added_chars)
+    clause, was_truncated = _enforce_budget(clause, max_added_chars)
     clause = _ensure_trailing_period(clause)
     added_chars = _count_chars(clause)
 
     base = _ensure_trailing_period(text)
     perturbed = base + " " + clause
 
-    return {
+    result = {
         "original": text,
         "perturbed": perturbed,
         "clause": clause,
@@ -353,6 +376,12 @@ def apply_uncertainty_clause(
         "action": "uncertainty_clause",
         "attack_type": "uncertainty_clause",
     }
+    if was_truncated:
+        result["warning"] = (
+            f"Your clause was truncated to fit the {max_added_chars}-char "
+            f"per-call budget. Write shorter text to avoid cut-off sentences."
+        )
+    return result
 
 
 # ============================================================================
@@ -454,7 +483,7 @@ def apply_constraint_stack(
     else:  # comma
         joined = ", ".join(constraints)
 
-    joined = _enforce_budget(joined, max_added_chars)
+    joined, was_truncated = _enforce_budget(joined, max_added_chars)
     added_chars = _count_chars(joined)
 
     if style == "bullets":
@@ -462,7 +491,7 @@ def apply_constraint_stack(
     else:
         perturbed = base + ", " + joined + "."
 
-    return {
+    result = {
         "original": text,
         "perturbed": perturbed,
         "constraints": constraints,
@@ -471,6 +500,12 @@ def apply_constraint_stack(
         "action": "constraint_stack",
         "attack_type": "constraint_stack",
     }
+    if was_truncated:
+        result["warning"] = (
+            f"Your constraints were truncated to fit the {max_added_chars}-char "
+            f"per-call budget. Use fewer or shorter constraints."
+        )
+    return result
 
 
 # ============================================================================
@@ -532,10 +567,11 @@ def apply_structure_inject(
         dict with: original, perturbed, rewrite, added_chars,
                    action, attack_type.
     """
-    rewrite = _enforce_budget(rewrite, _count_chars(text) + max_added_chars)
+    budget = _count_chars(text) + max_added_chars
+    rewrite, was_truncated = _enforce_budget(rewrite, budget)
     added_chars = max(0, _count_chars(rewrite) - _count_chars(text))
 
-    return {
+    result = {
         "original": text,
         "perturbed": rewrite,
         "rewrite": rewrite,
@@ -543,6 +579,12 @@ def apply_structure_inject(
         "action": "structure_inject",
         "attack_type": "structure_inject",
     }
+    if was_truncated:
+        result["warning"] = (
+            f"Your rewrite was truncated to fit the {budget}-char budget. "
+            f"Write a shorter rewrite to avoid cut-off sentences."
+        )
+    return result
 
 
 # ============================================================================
@@ -623,7 +665,7 @@ def apply_objective_inject(
         dict with: original, perturbed, directive, position,
                    insert_at_index, added_chars, action, attack_type.
     """
-    directive = _enforce_budget(directive, max_added_chars)
+    directive, was_truncated = _enforce_budget(directive, max_added_chars)
     added_chars = _count_chars(directive)
 
     if position == "prefix":
@@ -645,7 +687,7 @@ def apply_objective_inject(
         d = directive.lstrip().lstrip(",").strip()
         perturbed = base + ", " + d + "."
 
-    return {
+    result = {
         "original": text,
         "perturbed": perturbed,
         "directive": directive,
@@ -655,6 +697,12 @@ def apply_objective_inject(
         "action": "objective_inject",
         "attack_type": "objective_inject",
     }
+    if was_truncated:
+        result["warning"] = (
+            f"Your directive was truncated to fit the {max_added_chars}-char "
+            f"per-call budget. Write a shorter directive to avoid cut-off sentences."
+        )
+    return result
 
 
 # ============================================================================

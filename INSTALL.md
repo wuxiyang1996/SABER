@@ -265,7 +265,7 @@ See **RUN.md** for more options and troubleshooting.
 | `_pickle.UnpicklingError: Weights only load failed` | PyTorch 2.6+ changed `torch.load` default | Patch LIBERO's `torch.load` calls with `weights_only=False` — see [§5.4](#54-libero-torchload-patch-pytorch-26). |
 | `Cannot import openpi` (after path set) | `policy/pi05` or openpi package missing under RoboTwin | Verify RoboTwin contains `policy/pi05/src` with the openpi package. |
 | pip resolve conflicts (numpy, trl, openpipe-art) | Strict pins in requirements.txt | Use `numpy>=2`; or install `openpipe-art[langgraph]` only then the rest. |
-| EGL / headless rendering | Missing libEGL or Mesa | Set `MUJOCO_GL=egl`, `PYOPENGL_PLATFORM=egl`; install libegl1-mesa (or equivalent). |
+| EGL / headless rendering | Missing libEGL or Mesa | Set `MUJOCO_GL=egl`, `PYOPENGL_PLATFORM=egl` **before** starting Python (e.g. at top of run script). Install: `conda install -c conda-forge libopengl mesalib`. If EGL still fails (e.g. `'NoneType' object has no attribute 'eglQueryString'`), use: `MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa` (slower). |
 | PYTORCH_CUDA_ALLOC_CONF deprecated | PyTorch 2.6+ | Use `PYTORCH_ALLOC_CONF` instead; this is a warning only. |
 | `model-service` killed by signal 6 / `std::bad_alloc` | `torchcodec` 0.5 incompatible with PyTorch 2.9+ | `pip install --upgrade torchcodec` (need ≥0.6). |
 | `ModuleNotFoundError: No module named 'vllm.tool_parsers'` | ART targets vLLM ≥0.16 import paths | Run `python scripts/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |

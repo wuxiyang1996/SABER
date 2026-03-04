@@ -46,6 +46,11 @@ from __future__ import annotations
 
 import os
 import sys
+
+# Headless rendering — must be set before MuJoCo/PyOpenGL are imported anywhere.
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
 import time
 import warnings
 
@@ -174,10 +179,6 @@ except OSError:
 # vLLM uses enable_sleep_mode=True by default: it frees the KV cache during
 # training, so nearly the full GPU is available for the LoRA gradient update.
 # On A100-80GB with Qwen2.5-3B (4-bit + LoRA r=8), training needs <8 GB.
-
-# ---- Headless rendering (must be set before MuJoCo / PyOpenGL import) --
-os.environ.setdefault("MUJOCO_GL", "egl")
-os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 import argparse
 import asyncio
@@ -574,6 +575,8 @@ async def train(args: argparse.Namespace) -> None:
     # (requires ART patch via scripts/apply_vllm_patches.py).
     engine_args_dict = dict(
         gpu_memory_utilization=args.gpu_memory_utilization,
+        enable_sleep_mode=False,
+        max_model_len=args.max_seq_length,
     )
     init_args = art.dev.InitArgs(
         max_seq_length=args.max_seq_length,
@@ -1147,6 +1150,12 @@ def main():
         ),
     )
     args = parser.parse_args()
+    if args.max_seq_length != 8192:
+        logger.warning(
+            "Forcing max_seq_length %d -> 8192 for train/eval consistency.",
+            args.max_seq_length,
+        )
+        args.max_seq_length = 8192
 
     # Cap vLLM memory to reduce OOM risk (sleep/wake fragmentation, training spikes)
     _MAX_GPU_MEM_UTIL = 0.60

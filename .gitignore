@@ -38,13 +38,15 @@ unsloth_compiled_cache/
 # ----- Jupyter -----
 .ipynb_checkpoints/
 
-# ----- Logs / outputs -----
+# ----- External repos (cloned VLAs / dependencies, do not commit) -----
+repos/
+
+# ----- Logs / outputs / results -----
 *.log
 wandb/
 runs/
-# ART checkpoints, vLLM logs, trajectories (do not commit)
+# ART checkpoints, vLLM logs, trajectories, eval results (do not commit)
 outputs/
 openpi/
-
-# Eval result JSONs (optional; keep if you want to track metrics)
+# Eval result JSONs
 eval/results/

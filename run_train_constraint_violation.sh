@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run GRPO training warm-started from a cold-start SFT model.
+# Run GRPO training (constraint_violation) warm-started from a cold-start SFT model.
 # Pipeline: cold-start collection → SFT → GRPO (this script).
 #
-# Base model: cold-start SFT LoRA adapter (Qwen2.5-3B-Instruct + task_failure trajectories).
+# Base model: cold-start SFT LoRA adapter (Qwen2.5-3B-Instruct + constraint_violation trajectories).
 # GPUs: VLA rollouts on 0,1; vLLM inference on 2; Unsloth training on 3.
 #
 # ~6h target: Total time ≈ (steps × time_per_step) + post_eval.
@@ -29,7 +29,7 @@ conda activate runpod
 export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export PYTHONUTF8=1
-export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 # Prefer the vast venv Python; fall back to env python
 if [[ -x /venv/vast/bin/python ]]; then
@@ -41,11 +41,12 @@ else
 fi
 
 $PYTHON train_vla.py \
-  --model_name qwen2.5-3B-cold-start \
-  --project_name vla-attack-agent-cold-start \
-  --base_model outputs/sft_runs/sft_cold_start__Qwen_Qwen2.5-3B-Instruct__20260301_200405__task_failure/merged_model \
-  --objective task_failure \
-  --tool_sets char,token,prompt \
+  --model_name qwen2.5-3B-cold-start-constraint-violation \
+  --project_name vla-attack-agent-cold-start-constraint-violation \
+  --base_model outputs/sft_runs/sft_cold_start__Qwen_Qwen2.5-3B-Instruct__20260301_200642__constraint_violation/merged_model \
+  --resume \
+  --objective constraint_violation \
+  --tool_sets prompt \
   --task_suite libero_spatial,libero_object,libero_goal,libero_10 \
   --task_ids 0-9 \
   --episodes_per_task 1 \
@@ -65,5 +66,4 @@ $PYTHON train_vla.py \
   --eval_episodes_per_task 5 \
   --vla_gpus 0,1 \
   --attack_gpus 2,3 \
-  --resume \
-  --gpu_memory_utilization 0.35
+  --gpu_memory_utilization 0.45

@@ -46,7 +46,7 @@ echo ""
 # 0. Source conda
 # ------------------------------------------------------------------
 if ! command -v conda &>/dev/null; then
-    for p in /opt/miniforge3 /opt/miniconda3 ~/miniforge3 ~/miniconda3; do
+    for p in /workspace/miniforge3 /opt/miniforge3 /opt/miniconda3 ~/miniforge3 ~/miniconda3; do
         if [[ -f "${p}/etc/profile.d/conda.sh" ]]; then
             source "${p}/etc/profile.d/conda.sh"
             break

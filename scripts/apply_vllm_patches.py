@@ -2,7 +2,7 @@
 """
 Apply ART 0.5.x ↔ vLLM 0.11.x compatibility patches.
 
-Eight patches:
+Nine patches:
   1. Add pause_generation / resume_generation stubs to AsyncLLM
      (ART calls them; vLLM < 0.16 does not have them).
   2. Replace run_on_workers(do_sleep/do_wake_up) with native
@@ -38,6 +38,11 @@ Eight patches:
      causing all trajectories to produce identical attacks/rewards.
        a) backend.py: use max−min tolerance instead of set uniqueness.
        b) tokenize.py: skip advantage only when |advantage| < 1e-8.
+  9. Fix double-encoded tool_call arguments in langchain-core's
+     parse_tool_call().  Some OpenAI-compatible servers (vLLM, etc.)
+     double-encode the function.arguments field, so json.loads() returns
+     a string instead of a dict.  Pydantic v2 then rejects the AIMessage.
+     This patch unwraps the extra encoding layer.
 
 Usage:
     python scripts/apply_vllm_patches.py          # auto-detect site-packages
@@ -647,6 +652,68 @@ def patch_grpo_reward_tolerance(sp: str, *, dry_run: bool = False) -> bool:
     return changed
 
 
+def patch_langchain_double_encoded_tool_args(sp: str, *, dry_run: bool = False) -> bool:
+    """Patch 9: fix double-encoded tool_call arguments in langchain-core.
+
+    Some OpenAI-compatible model servers (vLLM, etc.) double-encode the
+    function.arguments field in tool calls.  The value arrives as a JSON
+    string that, when parsed once by json.loads(), yields another *string*
+    instead of a dict.  langchain-core's parse_tool_call() passes this
+    string as ``args`` to the ToolCall, and Pydantic v2 validation on
+    AIMessage rejects it (``Input should be a valid dictionary``).
+
+    The LoggingLLM wrapper in ART has a post-processing fix for string
+    args, but it never executes because the error is raised inside the
+    underlying ChatOpenAI.ainvoke() before returning.
+
+    This patch adds a second json.loads() pass when the first parse
+    returns a string, and falls back to {} if args is still not a dict.
+    """
+    path = os.path.join(sp, "langchain_core", "output_parsers", "openai_tools.py")
+    if not os.path.isfile(path):
+        print(f"[SKIP] {path} not found (langchain-core not installed?)")
+        return False
+
+    with open(path) as f:
+        src = f.read()
+
+    if "isinstance(function_args, str)" in src:
+        print("[OK]   Patch 9: double-encoded tool_call args fix already present")
+        return False
+
+    old_block = (
+        '    parsed = {\n'
+        '        "name": raw_tool_call["function"]["name"] or "",\n'
+        '        "args": function_args or {},\n'
+        '    }'
+    )
+    new_block = (
+        '    if isinstance(function_args, str):\n'
+        '        try:\n'
+        '            function_args = json.loads(function_args, strict=strict)\n'
+        '        except (JSONDecodeError, TypeError):\n'
+        '            pass\n'
+        '    parsed = {\n'
+        '        "name": raw_tool_call["function"]["name"] or "",\n'
+        '        "args": function_args if isinstance(function_args, dict) else {},\n'
+        '    }'
+    )
+
+    if old_block not in src:
+        print("[SKIP] Patch 9: anchor not found in openai_tools.py (already modified or version changed?)")
+        return False
+
+    if dry_run:
+        print("[NEED] Patch 9: fix double-encoded tool_call arguments in parse_tool_call()")
+        return True
+
+    patched = src.replace(old_block, new_block, 1)
+    with open(path, "w") as f:
+        f.write(patched)
+    print(f"[DONE] Patch 9: fixed double-encoded tool_call args in {path}")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Dry-run: report status only")
@@ -674,8 +741,9 @@ def main() -> None:
     p6 = patch_get_model_config_training_device(sp, dry_run=args.check)
     p7 = patch_accelerate_bnb_check(sp, dry_run=args.check)
     p8 = patch_grpo_reward_tolerance(sp, dry_run=args.check)
+    p9 = patch_langchain_double_encoded_tool_args(sp, dry_run=args.check)
 
-    any_needed = p1 or p2 or p3 or p4 or p5 or p6 or p7 or p8
+    any_needed = p1 or p2 or p3 or p4 or p5 or p6 or p7 or p8 or p9
     if args.check:
         if any_needed:
             print("\nRun without --check to apply patches.")

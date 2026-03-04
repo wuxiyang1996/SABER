@@ -139,11 +139,27 @@ agent_attack_framework/
 │   └── tool_manual.md         # Detailed tool usage guide
 ├── rwd_func/
 │   ├── rwd.py                 # Reward functions (5 objectives + stealth penalty)
+│   ├── metrics.py             # Evaluation metrics computation and formatting
 │   └── objective.md           # Reward objective documentation
 ├── trainer/
 │   └── train.py               # ART GRPO training loop (HotpotQA)
 ├── libero_rollouts/
-│   └── pi05_libero_model.py   # Pi0.5 VLA wrapper for LIBERO (JAX)
+│   ├── model_factory.py       # Unified VLA loader (per-model env routing)
+│   ├── pi05_libero_model.py   # Pi0.5 VLA wrapper (JAX)
+│   ├── pi0_libero_model.py    # Pi0 VLA wrapper (JAX)
+│   ├── openvla_wrapper.py     # OpenVLA wrapper (HF transformers)
+│   ├── lightvla_wrapper.py    # LightVLA wrapper (HF transformers)
+│   ├── ecot_wrapper.py        # ECoT wrapper (OpenVLA + CoT)
+│   ├── deepthinkvla_rollout_wrapper.py  # DeepThinkVLA wrapper (4-bit, fast)
+│   ├── molmoact_wrapper.py    # MolmoAct wrapper (Molmo + action parsing)
+│   ├── internvla_wrapper.py   # InternVLA-M1 wrapper (custom architecture)
+│   ├── subprocess_vla_wrapper.py  # Subprocess VLA client (env isolation)
+│   └── vla_subprocess_server.py   # Subprocess VLA server (runs in VLA env)
+├── eval/
+│   ├── run_libero_eval.py     # Single-model LIBERO evaluation
+│   ├── run_all_libero_evals_parallel.py  # Parallel multi-model evaluation
+│   ├── model_registry.py      # Model hyperparameters and loading
+│   └── parallel_episode_runner.py
 ├── dataset/
 │   ├── __init__.py
 │   └── hotpotqa.py            # HotpotQA loader + F1/EM metrics
@@ -151,16 +167,35 @@ agent_attack_framework/
 │   ├── __init__.py
 │   └── qa_model.py            # Frozen Qwen2.5-3B QA wrapper
 ├── scripts/
+│   ├── setup_vla_envs.sh      # Create conda envs for all VLA model groups
 │   ├── check_libero_env.py    # Environment verification script
 │   └── apply_vllm_patches.py  # Auto-apply ART ↔ vLLM 0.11.x patches
-├── run.py                     # Convenience entry-point (HotpotQA + VLA)
+├── repos/
+│   ├── deepthinkvla/          # DeepThinkVLA source (for model code)
+│   └── internvla_m1/          # InternVLA-M1 source (for model code)
+│
+│ ── Core scripts ──
 ├── train_vla.py               # GRPO training for VLA attack agent
-├── eval_attack.py             # Post-training VLA attack evaluation
-├── eval.py                    # HotpotQA evaluation: baseline vs attack
+├── eval_attack_vla.py         # Live attack evaluation (agent + VLA rollout)
+├── eval_replay_attack.py      # Replay pre-recorded attacks on any VLA (no agent)
+├── aggregate_replay_results.py  # Cross-model replay result aggregation
+├── run.py                     # Convenience entry-point (HotpotQA + VLA)
+│
+│ ── Shell entrypoints ──
+├── run_train.sh               # Train attack agent (task_failure)
+├── run_train_constraint_violation.sh
+├── run_train_action_inflation.sh
+├── run_record_agent_outputs_task_failure.sh  # Record attack prompts
+├── run_eval_baseline_all_vlas.sh             # Baseline eval (no attack)
+├── run_eval_attack_all_vlas.sh               # Live attack eval (constraint_violation)
+├── run_eval_attack_all_vlas_task_failure.sh   # Live attack eval (task_failure)
+├── run_eval_attack_all_vlas_action_inflation.sh
+├── run_eval_replay_task_failure.sh           # Replay attack eval on all VLAs
+│
 ├── install.sh                 # One-command full install (conda + deps + patches)
 ├── requirements.txt
-├── INSTALL.md                 # Detailed manual installation guide
-├── RUN.md                     # VLA run guide and troubleshooting
+├── INSTALL.md
+├── RUN.md
 └── README.md
 ```
 
@@ -336,6 +371,43 @@ else:
 
 Also add `logprobs=True` to both `ChatOpenAI` constructors (in `init_chat_model()` and `with_config()`) to ensure log probabilities are always captured for GRPO training.
 
+### LangChain compatibility fix (langchain-core 1.2.x + OpenAI-compatible servers)
+
+**Fix 9 — Double-encoded tool_call arguments (`langchain_core/output_parsers/openai_tools.py`)**
+
+Some OpenAI-compatible model servers (vLLM, etc.) double-encode the `function.arguments` field in tool call responses. The value arrives as a JSON string that, when parsed once by `json.loads()`, yields another *string* instead of a dict. LangChain's `parse_tool_call()` passes this string as `args` to the `ToolCall`, and Pydantic v2 validation on `AIMessage` rejects it:
+
+```
+pydantic_core._pydantic_core.ValidationError: 1 validation error for AIMessage
+tool_calls.0.args
+  Input should be a valid dictionary [type=dict_type, input_value='{"text": "...", "type": "..."}', input_type=str]
+```
+
+The `LoggingLLM` wrapper in ART (lines 185-189 of `llm_wrapper.py`) has post-processing code to fix string args, but it never executes because the error is raised inside the underlying `ChatOpenAI.ainvoke()` before returning.
+
+Fix: add a second `json.loads()` pass in `parse_tool_call()` when the first parse returns a string, and fall back to `{}` if args is still not a dict.
+
+```python
+# In langchain_core/output_parsers/openai_tools.py, parse_tool_call():
+
+# BEFORE (double-encoded string passes through as args):
+    parsed = {
+        "name": raw_tool_call["function"]["name"] or "",
+        "args": function_args or {},
+    }
+
+# AFTER (unwrap extra encoding layer):
+    if isinstance(function_args, str):
+        try:
+            function_args = json.loads(function_args, strict=strict)
+        except (JSONDecodeError, TypeError):
+            pass
+    parsed = {
+        "name": raw_tool_call["function"]["name"] or "",
+        "args": function_args if isinstance(function_args, dict) else {},
+    }
+```
+
 ### Rollout robustness fixes (`agent/vla_rollout.py`)
 
 **Fix 4 — EGL rendering context not thread-safe**
@@ -353,6 +425,98 @@ LIBERO's `step()` method overrode Robosuite's `done` flag inappropriately. Added
 **Fix 7 — `EngineDeadError` after training (wake_up fails)**
 
 If the vLLM EngineCore process dies during the training phase (e.g. OOM when Unsloth uses the GPU, or worker crash), `llm.wake_up()` raises `EngineDeadError`. In `art/unsloth/service.py`: (1) Before `wake_up()`, call `torch.cuda.synchronize()`, `gc_and_empty_cuda_cache(5)`, and `await asyncio.sleep(2.0)` so GPU memory is fully released before workers restore weights. (2) Catch `EngineDeadError` and re-raise as `RuntimeError` with a message suggesting restart with `--resume`. **Reduce risk:** lower `--gpu_memory_utilization` (e.g. 0.60) to leave more headroom for the sleep/wake cycle; check `dmesg` for OOM killer. On A100-80GB with Qwen2.5-3B (4-bit + LoRA r=8), training needs <8 GB — OOM during wake-up is rare.
+
+## Cross-Model Attack Transfer Evaluation
+
+The framework supports evaluating attack transferability across **8 victim VLA models**. Attacks are first recorded from a source model (e.g. Pi0.5), then **replayed** on other VLAs to measure how well the perturbed instructions transfer.
+
+### Supported VLA models
+
+| Model | Env | Architecture | Action horizon |
+|-------|-----|-------------|---------------|
+| **Pi0** (`openpi_pi0`) | `runpod` (JAX, in-process) | OpenPI flow-matching | 10 |
+| **Pi0.5** (`openpi_pi05`) | `runpod` (JAX, in-process) | OpenPI flow-matching | 10 |
+| **OpenVLA** (`openvla`) | `vla_models` (subprocess) | OpenVLA-7B per-suite | 1 |
+| **LightVLA** (`lightvla`) | `vla_models` (subprocess) | LightVLA per-suite | 1 |
+| **ECoT** (`ecot`) | `vla_models` (subprocess) | OpenVLA + Chain-of-Thought | 1 |
+| **DeepThinkVLA** (`deepthinkvla`) | `vla_models` (subprocess) | OpenVLA + CoT + RL, 4-bit | 10 |
+| **MolmoAct** (`molmoact`) | `vla_molmoact` (subprocess) | Molmo + action parsing | 1 |
+| **InternVLA-M1** (`internvla_m1`) | `vla_internvla` (subprocess) | Qwen2.5VL + DINOv2 + DiT | 8 |
+
+### Environment setup
+
+Different VLA models require different `transformers` versions, so they run in separate conda environments via subprocess isolation:
+
+```bash
+# Create all VLA environments (one-time)
+bash scripts/setup_vla_envs.sh
+
+# Or create individual envs
+bash scripts/setup_vla_envs.sh vla_models    # OpenVLA, LightVLA, ECoT, DeepThinkVLA
+bash scripts/setup_vla_envs.sh vla_molmoact  # MolmoAct (transformers >= 4.48)
+bash scripts/setup_vla_envs.sh vla_internvla # InternVLA-M1 (transformers 4.52)
+```
+
+The `model_factory.py` automatically routes each model to its correct environment. No manual `VLA_PYTHON` setting is needed.
+
+### Step 1: Record attack prompts (already done for task_failure)
+
+Record the attack agent's perturbed instructions from source models:
+
+```bash
+bash run_record_agent_outputs_task_failure.sh openpi_pi0
+bash run_record_agent_outputs_task_failure.sh openpi_pi05
+```
+
+This produces JSON files with `original_instruction` and `perturbed_instruction` for each (suite, task, episode):
+- `outputs/agent_output_records_task_failure_2/task_failure_openpi_pi0.json`
+- `outputs/agent_output_records_task_failure_2/task_failure_openpi_pi05.json`
+
+### Step 2: Replay attacks on other VLAs
+
+Replay the recorded perturbed instructions on victim models (no attack agent needed — 1 GPU only):
+
+```bash
+# Replay on all 6 non-JAX models using both source records
+bash run_eval_replay_task_failure.sh
+
+# Or specific models
+bash run_eval_replay_task_failure.sh openvla lightvla
+
+# Or run individual evaluations
+python eval_replay_attack.py \
+  --victim openvla \
+  --attack_record outputs/agent_output_records_task_failure_2/task_failure_openpi_pi05.json \
+  --vla_gpu 0 \
+  --output_dir outputs/replay_eval_task_failure
+```
+
+### Step 3: Aggregate cross-model results
+
+The run script automatically calls the aggregator. Or run it manually:
+
+```bash
+python aggregate_replay_results.py \
+  --input_dir outputs/replay_eval_task_failure \
+  --output outputs/replay_eval_task_failure/cross_model_summary.json
+```
+
+This produces a cross-model comparison table showing ASR (attack success rate) and TER (task execution rate) deltas per victim model and source.
+
+### Output structure
+
+```
+outputs/replay_eval_task_failure/
+├── replay_task_failure_openvla_from_openpi_pi0.json
+├── replay_task_failure_openvla_from_openpi_pi05.json
+├── replay_task_failure_lightvla_from_openpi_pi0.json
+├── ...
+├── openvla_from_openpi_pi0.log
+├── openvla_from_openpi_pi05.log
+├── ...
+├── cross_model_summary.json          # Aggregated cross-model comparison
+└── aggregation.log
+```
 
 ## Quick Evaluation
 
