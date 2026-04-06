@@ -18,7 +18,9 @@
 - [Running SABER](#running-saber)
 - [Results](#results)
 - [Animations](#animations)
+- [Project Structure](#project-structure)
 - [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
 
 ## Installation
 
@@ -41,6 +43,15 @@ python installation/check_libero_env.py     # verify all dependencies
 ```
 
 See **[INSTALL.md](installation/INSTALL.md)** for manual setup, env options, and troubleshooting.
+
+### Hardware Requirements
+
+| Setup | GPUs | VRAM | Notes |
+|-------|------|------|-------|
+| **Training** (recommended) | 4× | 80 GB each | GPUs 0–2 for Pi0.5 (JAX), GPU 3 for attack agent (vLLM) |
+| **Training** (minimum) | 2× | 40 GB each | GPU 0 for Pi0.5, GPU 1 for attack agent |
+| **Single-GPU** (debug only) | 1× | 80 GB | `--vla_gpus 0 --attack_gpus 0 --gpu_memory_utilization 0.45` |
+| **Replay evaluation** | 1× | 24+ GB | No attack agent needed; single victim VLA only |
 
 ## Architecture
 
@@ -131,6 +142,26 @@ Baseline (clean instruction) vs attack (SABER-perturbed instruction) rollouts. I
 | **Task Failure (2)** | <img src="animation/task_failure_2_baseline.gif" width="300"/> | <img src="animation/task_failure_2_attack.gif" width="300"/> |
 | **Long-Horizon** | <img src="animation/long_horizon_baseline.gif" width="300"/> | <img src="animation/long_horizon_attack.gif" width="300"/> |
 
+## Project Structure
+
+```
+agent_attack_framework/
+├── train_vla.py              # GRPO training entry point
+├── eval_attack_vla.py        # Live attack evaluation
+├── eval_baseline_vla.py      # Baseline evaluation (no attack)
+├── eval_replay_attack.py     # Cross-model replay evaluation
+├── agent/                    # ReAct attack agent (LangGraph)
+├── tools/                    # Perturbation tools (char, token, prompt, visual)
+├── rwd_func/                 # Reward functions + stealth penalty
+├── libero_rollouts/          # VLA model wrappers (6 models)
+├── eval/                     # LIBERO evaluation suite
+├── cold_start/               # Cold-start trajectory collection
+├── scripts/                  # Training & evaluation shell scripts
+├── installation/             # Installer, patches, requirements, env setup
+├── repos/                    # External model repos (DeepThinkVLA, InternVLA-M1)
+└── RUN.md                    # Running guide & troubleshooting
+```
+
 ## Citation
 
 ```bibtex
@@ -141,3 +172,15 @@ Baseline (clean instruction) vs attack (SABER-perturbed instruction) rollouts. I
   year={2025}
 }
 ```
+
+## Acknowledgements
+
+- [LIBERO](https://github.com/Lifelong-Robot-Learning/LIBERO) — manipulation benchmark
+- [OpenPI](https://github.com/Physical-Intelligence/openpi) — Pi0.5 VLA model
+- [openpipe-art](https://github.com/openpipe/art) — GRPO training framework
+- [vLLM](https://github.com/vllm-project/vllm) — LLM inference engine
+- [LangGraph](https://github.com/langchain-ai/langgraph) — agent orchestration
+
+## License
+
+This project is released under the [MIT License](LICENSE).
