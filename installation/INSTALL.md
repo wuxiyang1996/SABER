@@ -75,7 +75,7 @@ Install the main package list:
 
 ```bash
 cd /path/to/agent_attack_framework
-pip install -r requirements.txt
+pip install -r installation/requirements.txt
 ```
 
 ### If dependency resolution fails
@@ -85,7 +85,7 @@ pip install -r requirements.txt
   ```bash
   pip install "openpipe-art[langgraph]==0.5.9"
   ```
-  Then install the rest of `requirements.txt` (vllm, trl, unsloth, transformers, langgraph, etc.). You may lose some ART backend features but VLA attack training works with the LangGraph integration.
+  Then install the rest of `installation/requirements.txt` (vllm, trl, unsloth, transformers, langgraph, etc.). You may lose some ART backend features but VLA attack training works with the LangGraph integration.
 
 ---
 
@@ -259,6 +259,18 @@ Different VLA victim models require incompatible `transformers` versions (and ot
 | `vla_molmoact` | **MolmoAct** | transformers >= 4.51 |
 | `vla_internvla` | **InternVLA-M1** | transformers 4.52.x |
 
+### External model repos
+
+DeepThinkVLA and InternVLA-M1 require cloning their source repos (custom model classes not available via HuggingFace). Clone them into `repos/` before creating those envs:
+
+```bash
+cd repos/
+git clone https://github.com/OpenBMB/DeepThinkVLA deepthinkvla
+git clone https://github.com/InternRobotics/InternVLA-M1 internvla_m1
+```
+
+Other paper models (Pi0.5, OpenVLA, ECoT, MolmoAct) load directly from HuggingFace and do not need a local repo clone.
+
 ### Setup
 
 Create all VLA envs at once:
@@ -303,7 +315,7 @@ See **RUN.md** for more options and troubleshooting.
 | `AssertionError: Key init_states not found in config file` | Incomplete `~/.libero/config.yaml` | Write the full 5-key config — see [§5.3](#53-libero-config-liberoconfiguaml). |
 | `_pickle.UnpicklingError: Weights only load failed` | PyTorch 2.6+ changed `torch.load` default | Patch LIBERO's `torch.load` calls with `weights_only=False` — see [§5.4](#54-libero-torchload-patch-pytorch-26). |
 | `Cannot import openpi` (after path set) | `policy/pi05` or openpi package missing under RoboTwin | Verify RoboTwin contains `policy/pi05/src` with the openpi package. |
-| pip resolve conflicts (numpy, trl, openpipe-art) | Strict pins in requirements.txt | Use `numpy>=2`; or install `openpipe-art[langgraph]` only then the rest. |
+| pip resolve conflicts (numpy, trl, openpipe-art) | Strict pins in `installation/requirements.txt` | Use `numpy>=2`; or install `openpipe-art[langgraph]` only then the rest. |
 | EGL / headless rendering | Missing libEGL or Mesa | Set `MUJOCO_GL=egl`, `PYOPENGL_PLATFORM=egl` **before** starting Python (e.g. at top of run script). Install: `conda install -c conda-forge libopengl mesalib`. If EGL still fails (e.g. `'NoneType' object has no attribute 'eglQueryString'`), use: `MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa` (slower). |
 | PYTORCH_CUDA_ALLOC_CONF deprecated | PyTorch 2.6+ | Use `PYTORCH_ALLOC_CONF` instead; this is a warning only. |
 | `model-service` killed by signal 6 / `std::bad_alloc` | `torchcodec` 0.5 incompatible with PyTorch 2.9+ | `pip install --upgrade torchcodec` (need ≥0.6). |
@@ -318,7 +330,7 @@ See **RUN.md** for more options and troubleshooting.
 - [ ] Main conda env created (Python 3.11) and activated
 - [ ] Conda packages: gcc_linux-64, gxx_linux-64, libopengl, mesalib
 - [ ] PyTorch (cu128) and JAX (cuda12) installed
-- [ ] `pip install -r requirements.txt` (or relaxed/openpipe-art[langgraph] if needed)
+- [ ] `pip install -r installation/requirements.txt` (or relaxed/openpipe-art[langgraph] if needed)
 - [ ] RoboTwin cloned and `ROBOTWIN_ROOT` set or default path correct
 - [ ] LIBERO installed: `pip install -e /path/to/LIBERO --no-deps`
 - [ ] LIBERO `__init__.py` present at `LIBERO/libero/__init__.py`

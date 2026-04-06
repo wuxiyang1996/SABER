@@ -4,7 +4,7 @@ Design principle: **one objective per training run**.  Each run explicitly
 tells the agent which adversarial outcome to pursue, and the reward function
 measures only that single outcome (plus a stealth penalty).
 
-The five attack objectives (from objective.md):
+The five attack objectives:
   1. task_failure       — VLA fails to complete the LIBERO task
   2. action_inflation   — VLA takes more steps (longer action sequence)
   3. thinking_inflation — VLA generates more reasoning tokens

@@ -15,9 +15,9 @@
 #   GPU 2: model batch 3   GPU 3: model batch 4
 #
 # Usage:
-#   bash run_eval_baseline_all_vlas.sh                                # all 8+ models
-#   bash run_eval_baseline_all_vlas.sh openvla                       # single model
-#   bash run_eval_baseline_all_vlas.sh openvla ecot deepthinkvla     # specific models
+#   bash scripts/run_eval_baseline_all_vlas.sh                       # all models
+#   bash scripts/run_eval_baseline_all_vlas.sh openvla               # single model
+#   bash scripts/run_eval_baseline_all_vlas.sh openvla ecot deepthinkvla  # specific models
 set -euo pipefail
 
 cd "$(dirname "$0")"

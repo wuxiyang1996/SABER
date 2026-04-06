@@ -224,12 +224,6 @@ From `agent_attack_framework`, run all VLAs on LIBERO 4 suites with work distrib
 # With conda env "vast" (recommended): activate then run
 conda activate vast
 python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --cpu_workers 4
-# Or use the wrapper script (activates vast if conda is available):
-./eval/run_all_libero_evals_vast.sh
-
-# All 6 models, 4 GPUs, 4 parallel env threads per native model (without conda)
-python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --cpu_workers 4
-
 # Subset of models
 python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --models openpi_pi05,openvla,ecot,deepthinkvla
 
@@ -250,18 +244,5 @@ python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --repo_paths openvla
 |--------|--------|-----|
 | **Skipped: no repo** (other external) | An external model has no auto-clone URL and no `--repo_paths` was given. | Provide `--repo_paths <model>=/path` for that model, or add a cloneable repo in code. |
 | **No result JSON found** (or **done -> None** for an external model) | The external eval subprocess ran but did not write the expected `&lt;model&gt;_external_&lt;ts&gt;.json` under `eval/results/`. Often the repo’s eval command failed (missing deps, wrong script path, or timeout). | Check `eval/results/&lt;model&gt;_*.log` for the subprocess stdout/stderr. Install the model’s dependencies and ensure its eval script runs when you `cd` into the cloned repo. |
-| **Traceback … No module named 'jax'** (openpi_pi05) | Native OpenPI models need JAX and the OpenPI package. | Install JAX and OpenPI (see INSTALL.md), or run only external models with `--models openvla,molmoact,...`. |
+| **Traceback … No module named 'jax'** (openpi_pi05) | Native OpenPI models need JAX and the OpenPI package. | Install JAX and OpenPI (see `installation/INSTALL.md`), or run only external models with `--models openvla,molmoact,...`. |
 
----
-
-## Testing all VLAs
-
-From `agent_attack_framework`:
-
-```bash
-python -m eval.test_all_vlas
-# or
-pytest eval/test_all_vlas.py -v
-```
-
-This checks that every model (native + external) has a config, that `get_commands()` returns valid commands for external models, and that `run_libero_eval --model <id> --print_cmd` exits 0 for all 6. Native model load is skipped if OpenPI/JAX is not installed.

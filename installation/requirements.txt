@@ -3,8 +3,8 @@
 # ============================================================================
 # Tested with: Python 3.11, PyTorch 2.9.0+cu128, JAX 0.5.3, CUDA 12.8
 #
-# One-step install:  bash install.sh [ENV_NAME]   (default env: vast)
-# Manual install:    see INSTALL.md
+# One-step install:  bash installation/install.sh [ENV_NAME]   (default env: vast)
+# Manual install:    see installation/INSTALL.md
 # ============================================================================
 
 # ---------------------------------------------------------------------------

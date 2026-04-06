@@ -70,16 +70,16 @@ So: **max_turns** = “how many tool-call rounds”; **max_edit_chars** = “tot
 
 ## Prerequisites
 
-**Full setup:** See **INSTALL.md** for step-by-step installation (conda env, pip, RoboTwin, LIBERO).
+**Full setup:** See **[installation/INSTALL.md](installation/INSTALL.md)** for step-by-step installation (conda env, pip, RoboTwin, LIBERO).
 
-1. **Environment**: Use the env from `requirements.txt` (e.g. conda `vast` or `libero`, Python 3.11, PyTorch + JAX, LIBERO, openpi, openpipe-art). To verify:
+1. **Environment**: Use the env from `installation/requirements.txt` (e.g. conda `vast` or `libero`, Python 3.11, PyTorch + JAX, LIBERO, openpi, openpipe-art). To verify:
    ```bash
    conda activate vast   # or libero
    python installation/check_libero_env.py
    ```
-   This checks: Python 3.11, RoboTwin root and policy/pi05, jax, flax, openpi, libero, openpipe-art, vllm, langgraph, and Pi05LiberoModel. If `vllm` is not 0.13.0, you may see a warning; upgrade with `pip install vllm==0.13.0` if needed.
+   This checks: Python 3.11, RoboTwin root and policy/pi05, jax, flax, openpi, libero, openpipe-art, vllm, langgraph, and Pi05LiberoModel. If `vllm` is not 0.11.2, you may see a warning.
 2. **LIBERO**: Installed and on `PYTHONPATH` (e.g. `pip install -e /path/to/LIBERO --no-deps`).
-3. **RoboTwin + openpi**: The Pi0.5 wrapper needs the **openpi** library from RoboTwin’s `policy/pi05`. Either place RoboTwin at `<workspace>/RoboTwin` (sibling of `agent_attack_framework/`), or set **`ROBOTWIN_ROOT`** to the RoboTwin root: `export ROBOTWIN_ROOT=/path/to/RoboTwin`. If missing, you get `ModuleNotFoundError: No module named 'openpi'` — see INSTALL.md.
+3. **RoboTwin + openpi**: The Pi0.5 wrapper needs the **openpi** library from RoboTwin’s `policy/pi05`. Either place RoboTwin at `<workspace>/RoboTwin` (sibling of `agent_attack_framework/`), or set **`ROBOTWIN_ROOT`** to the RoboTwin root: `export ROBOTWIN_ROOT=/path/to/RoboTwin`. If missing, you get `ModuleNotFoundError: No module named 'openpi'` — see `installation/INSTALL.md`.
 4. **Headless rendering**: On a machine without a display, set before any MuJoCo/PyOpenGL import (the script sets these by default):
    - `MUJOCO_GL=egl`
    - `PYOPENGL_PLATFORM=egl`
@@ -88,7 +88,7 @@ So: **max_turns** = “how many tool-call rounds”; **max_edit_chars** = “tot
    - **Attack agent (vLLM)**: `--attack_gpus` lists the GPU(s) for the vLLM subprocess. The script sets `CUDA_VISIBLE_DEVICES` to these so the ART/vLLM process sees them. vLLM currently runs with **tensor_parallel_size=1** (one GPU) so only the first GPU in the list is used for the attack model; multiple indices still reserve which GPUs the subprocess can see.
    - **Default**: `--vla_gpus 0` and `--attack_gpus` = all other visible GPUs (e.g. `1,2,3` on a 4-GPU node). For single-GPU runs use `--vla_gpus 0 --attack_gpus 0` (may OOM; use `--gpu_memory_utilization 0.45`).
 
-**Version note**: `requirements.txt` pins `vllm==0.13.0`. If your env has a different vllm (e.g. 0.11.2), the check script will warn; upgrade with `pip install vllm==0.13.0` if you need exact compatibility.
+**Version note**: `installation/requirements.txt` pins `vllm==0.11.2`. The ART compatibility patches (`installation/apply_vllm_patches.py`) are written for vLLM 0.11.x. If your env has a different vllm, the check script will warn.
 
 **Outputs**: LoRA checkpoints, vLLM logs, and ART trajectories are written under **`agent_attack_framework/outputs/`** (e.g. `outputs/vla-attack-agent/models/<model_name>/checkpoints/`, `.../logs/`). This folder is in `.gitignore`.
 
@@ -102,7 +102,7 @@ The run can appear to hang at a few points. Here’s what usually happens and wh
 
 - **What you see**: No log for a while after `python train_vla.py ...`.
 - **Cause**: Heavy imports (PyTorch, JAX, ART, LIBERO, etc.).
-- **What to do**: Wait 30–60 s. If it still does nothing, run with `python -u train_vla.py ...` so stdout is unbuffered and check for import errors (e.g. missing LIBERO, RoboTwin/openpi). If you see `ModuleNotFoundError: No module named 'openpi'`, set `ROBOTWIN_ROOT` or clone RoboTwin; see INSTALL.md.
+- **What to do**: Wait 30–60 s. If it still does nothing, run with `python -u train_vla.py ...` so stdout is unbuffered and check for import errors (e.g. missing LIBERO, RoboTwin/openpi). If you see `ModuleNotFoundError: No module named 'openpi'`, set `ROBOTWIN_ROOT` or clone RoboTwin; see `installation/INSTALL.md`.
 
 ### 2. “Loading Pi0.5 VLA model on GPU 0 …”
 

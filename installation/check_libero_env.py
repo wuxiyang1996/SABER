@@ -97,8 +97,8 @@ def main() -> int:
     try:
         import vllm
         print(f"[OK] vllm {vllm.__version__}")
-        if getattr(vllm, "__version__", "") != "0.13.0":
-            warnings.append(f"vllm {vllm.__version__} (requirements.txt pins 0.13.0)")
+        if getattr(vllm, "__version__", "") != "0.11.2":
+            warnings.append(f"vllm {vllm.__version__} (installation/requirements.txt pins 0.11.2)")
     except ImportError as e:
         errors.append(f"vllm: {e}")
     try:
@@ -154,7 +154,7 @@ def main() -> int:
     for e in errors:
         print(f"[FAIL] {e}")
     if errors:
-        print("\nFix the [FAIL] items above. See requirements.txt and RUN.md.")
+        print("\nFix the [FAIL] items above. See installation/requirements.txt and RUN.md.")
         return 1
     if warnings:
         print("Warnings above are optional to fix.")

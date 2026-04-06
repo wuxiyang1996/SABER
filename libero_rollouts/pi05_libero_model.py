@@ -62,12 +62,12 @@ else:
             f"RoboTwin root not found: {_ROBOTWIN_ROOT}\n"
             "The Pi0.5 VLA wrapper requires openpi: either use the in-repo copy at\n"
             "  agent_attack_framework/openpi/src  (no ROBOTWIN_ROOT set),\n"
-            "or clone RoboTwin and set ROBOTWIN_ROOT. See INSTALL.md."
+            "or clone RoboTwin and set ROBOTWIN_ROOT. See installation/INSTALL.md."
         )
     if not os.path.isdir(_PI05_POLICY_DIR):
         raise FileNotFoundError(
             f"Pi0.5 policy dir not found: {_PI05_POLICY_DIR}\n"
-            "RoboTwin must contain policy/pi05 (openpi library). See INSTALL.md."
+            "RoboTwin must contain policy/pi05 (openpi library). See installation/INSTALL.md."
         )
     for p in (_PI05_POLICY_DIR, _PI05_SRC_DIR):
         if p not in sys.path:
@@ -166,7 +166,7 @@ class Pi05LiberoModel:
                 f"Cannot import openpi: {e}\n"
                 "The openpi library is provided by the RoboTwin repo (policy/pi05).\n"
                 "Ensure ROBOTWIN_ROOT points to the RoboTwin root and that policy/pi05/src "
-                "contains the openpi package. See INSTALL.md in agent_attack_framework."
+                "contains the openpi package. See installation/INSTALL.md."
             ) from e
 
         self.train_config_name = train_config_name

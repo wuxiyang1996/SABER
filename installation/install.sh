@@ -5,10 +5,10 @@
 # Creates a conda env and installs ALL dependencies for VLA attack training
 # (Pi0.5 in LIBERO) in a single command.
 #
-# Usage:
-#   bash install.sh              # env name: vast (default)
-#   bash install.sh myenv        # env name: myenv
-#   bash install.sh vast --skip-conda   # skip conda create (env already exists)
+# Usage (from agent_attack_framework/):
+#   bash installation/install.sh              # env name: vast (default)
+#   bash installation/install.sh myenv        # env name: myenv
+#   bash installation/install.sh vast --skip-conda   # skip conda create
 #
 # Prerequisites:
 #   - conda (miniforge / miniconda / anaconda)
@@ -92,11 +92,11 @@ pip install "numpy>=2" "jax[cuda12]==0.5.3"
 # ------------------------------------------------------------------
 echo ""
 echo ">>> [4/8] Installing requirements.txt..."
-pip install -r "${REPO_DIR}/requirements.txt" || {
+pip install -r "${SCRIPT_DIR}/requirements.txt" || {
     echo ""
     echo "    pip install failed. Trying fallback: install openpipe-art without backend extra..."
     pip install "openpipe-art[langgraph]==0.5.9"
-    pip install -r "${REPO_DIR}/requirements.txt" --no-deps
+    pip install -r "${SCRIPT_DIR}/requirements.txt" --no-deps
 }
 
 # ------------------------------------------------------------------
@@ -145,7 +145,7 @@ YAML
 else
     echo "    WARNING: LIBERO not found at ${LIBERO_ROOT}"
     echo "    Clone it:  git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ${LIBERO_ROOT}"
-    echo "    Then re-run:  bash install.sh ${ENV_NAME} --skip-conda"
+    echo "    Then re-run:  bash installation/install.sh ${ENV_NAME} --skip-conda"
 fi
 
 # ------------------------------------------------------------------
@@ -198,7 +198,7 @@ for name, stmt in checks:
 print()
 if failed:
     print(f'  {len(failed)} check(s) failed: {failed}')
-    print('  See INSTALL.md for troubleshooting.')
+    print('  See installation/INSTALL.md for troubleshooting.')
 else:
     print('  All checks passed!')
 " 2>&1 | grep -v "^WARNING\|^Skipping\|DeprecationWarning\|RequestsDependencyWarning\|robosuite WARNING\|Gym has been\|Please upgrade\|Users of this\|See the migration\|swigvarlink\|SwigPy\|PYTORCH_CUDA" || true
@@ -209,6 +209,6 @@ echo "Installation complete!"
 echo ""
 echo "To activate:   conda activate ${ENV_NAME}"
 echo "To run:        cd ${REPO_DIR}"
-echo "               python run.py vla --vla_gpus 0,1,2 --attack_gpus 3 \\"
+echo "               python train_vla.py --objective task_failure \\"
 echo "                 --task_suite libero_spatial --task_ids 0,1,2"
 echo "============================================"
