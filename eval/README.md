@@ -10,15 +10,12 @@ All models below are available on **GitHub** and/or **Hugging Face**; links are 
 
 | Model | GitHub | Hugging Face |
 |-------|--------|--------------|
-| **OpenPI π0 / π0.5** | [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi) | [lerobot/pi05_libero_finetuned](https://huggingface.co/lerobot/pi05_libero_finetuned), [lerobot/pi05_libero_base](https://huggingface.co/lerobot/pi05_libero_base) |
+| **OpenPI π0.5** | [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi) | [lerobot/pi05_libero_finetuned](https://huggingface.co/lerobot/pi05_libero_finetuned), [lerobot/pi05_libero_base](https://huggingface.co/lerobot/pi05_libero_base) |
+| **OpenVLA** | [openvla/openvla](https://github.com/openvla/openvla) | [openvla/openvla-7b-finetuned-libero-spatial](https://huggingface.co/openvla/openvla-7b-finetuned-libero-spatial), [openvla/openvla-7b-finetuned-libero-10](https://huggingface.co/openvla/openvla-7b-finetuned-libero-10), (+ object/goal) |
+| **ECoT (Embodied CoT)** | [MichalZawalski/embodied-CoT](https://github.com/MichalZawalski/embodied-CoT) | [Embodied-CoT/ecot-openvla-7b-bridge](https://huggingface.co/Embodied-CoT/ecot-openvla-7b-bridge) |
 | **DeepThinkVLA** | [OpenBMB/DeepThinkVLA](https://github.com/OpenBMB/DeepThinkVLA) | [yinchenghust/deepthinkvla_libero_cot_rl](https://huggingface.co/yinchenghust/deepthinkvla_libero_cot_rl) |
 | **MolmoAct** | [allenai/molmoact](https://github.com/allenai/molmoact) | [allenai/MolmoAct-7B-D-LIBERO-Spatial-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Spatial-0812), [allenai/MolmoAct-7B-D-LIBERO-Long-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Long-0812), (+ Object/Goal variants) |
-| **ECoT (Embodied CoT)** | [MichalZawalski/embodied-CoT](https://github.com/MichalZawalski/embodied-CoT) | [Embodied-CoT/ecot-openvla-7b-bridge](https://huggingface.co/Embodied-CoT/ecot-openvla-7b-bridge) |
 | **InternVLA-M1** | [InternRobotics/InternVLA-M1](https://github.com/InternRobotics/InternVLA-M1) | [InternRobotics/InternVLA-M1-LIBERO-Spatial](https://huggingface.co/InternRobotics/InternVLA-M1-LIBERO-Spatial), [InternRobotics/InternVLA-M1](https://huggingface.co/InternRobotics/InternVLA-M1) |
-| **OpenVLA** | [openvla/openvla](https://github.com/openvla/openvla) | [openvla/openvla-7b-finetuned-libero-spatial](https://huggingface.co/openvla/openvla-7b-finetuned-libero-spatial), [openvla/openvla-7b-finetuned-libero-10](https://huggingface.co/openvla/openvla-7b-finetuned-libero-10), (+ object/goal) |
-| **StarVLA** | (see HF) | [StarVLA/Qwen3-VL-PI-LIBERO-4in1](https://huggingface.co/StarVLA/Qwen3-VL-PI-LIBERO-4in1) |
-| **X-VLA** | [2toinf/X-VLA](https://github.com/2toinf/X-VLA), [huggingface/lerobot](https://github.com/huggingface/lerobot) | [lerobot/xvla-libero](https://huggingface.co/lerobot/xvla-libero), [lerobot/xvla-base](https://huggingface.co/lerobot/xvla-base) |
-| **LightVLA** | [LiAutoAD/LightVLA](https://github.com/LiAutoAD/LightVLA) | [TTJiang/models](https://huggingface.co/TTJiang/models) (search `lightvla`) |
 
 ---
 
@@ -28,16 +25,12 @@ Concrete checkpoint IDs and URLs for loading each model. Use these with the mode
 
 | Model | Weights / checkpoint source | Notes |
 |-------|----------------------------|--------|
-| **OpenPI π0** | `gs://openpi-assets/checkpoints/pi0_base` (GCS; repo script), or [lerobot/pi05_libero_base](https://huggingface.co/lerobot/pi05_libero_base) (LeRobot port) | Official base is GCS; [HF issue #260](https://github.com/Physical-Intelligence/openpi/issues/260). Zero-shot LIBERO uses pi0_base. |
 | **OpenPI π0.5** | `gs://openpi-assets/checkpoints/pi05_libero` (GCS), [lerobot/pi05_libero_finetuned](https://huggingface.co/lerobot/pi05_libero_finetuned), [lerobot/pi05_libero_base](https://huggingface.co/lerobot/pi05_libero_base) | LIBERO-finetuned or base via LeRobot. |
 | **OpenVLA** | [openvla/openvla-7b](https://huggingface.co/openvla/openvla-7b) (base). LIBERO per-suite: [openvla/openvla-7b-finetuned-libero-spatial](https://huggingface.co/openvla/openvla-7b-finetuned-libero-spatial), [openvla/openvla-7b-finetuned-libero-object](https://huggingface.co/openvla/openvla-7b-finetuned-libero-object), [openvla/openvla-7b-finetuned-libero-goal](https://huggingface.co/openvla/openvla-7b-finetuned-libero-goal), [openvla/openvla-7b-finetuned-libero-10](https://huggingface.co/openvla/openvla-7b-finetuned-libero-10) | One checkpoint per suite; eval script loads by suite. |
-| **X-VLA** | [lerobot/xvla-libero](https://huggingface.co/lerobot/xvla-libero) (LIBERO), [lerobot/xvla-base](https://huggingface.co/lerobot/xvla-base) | Single LIBERO policy; `lerobot-eval --policy.path=lerobot/xvla-libero` auto-downloads. |
-| **MolmoAct** | [allenai/MolmoAct-7B-D-LIBERO-Spatial-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Spatial-0812), [allenai/MolmoAct-7B-D-LIBERO-Object-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Object-0812), [allenai/MolmoAct-7B-D-LIBERO-Goal-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Goal-0812), [allenai/MolmoAct-7B-D-LIBERO-Long-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Long-0812). Base: [allenai/MolmoAct-7B-D-0812](https://huggingface.co/allenai/MolmoAct-7B-D-0812) | One HF model per LIBERO suite; [MolmoAct collection](https://huggingface.co/collections/allenai/molmoact). |
-| **DeepThinkVLA** | [yinchenghust/deepthinkvla_libero_cot_rl](https://huggingface.co/yinchenghust/deepthinkvla_libero_cot_rl) (3B, LIBERO CoT+RL). Repo: [OpenBMB/DeepThinkVLA](https://github.com/OpenBMB/DeepThinkVLA); LIBERO eval: [wadeKeith/DeepThinkVLA_libero_plus](https://github.com/wadeKeith/DeepThinkVLA_libero_plus) | Hybrid decoder; HF checkpoint for LIBERO. |
 | **ECoT** | [Embodied-CoT/ecot-openvla-7b-bridge](https://huggingface.co/Embodied-CoT/ecot-openvla-7b-bridge). Code: [MichalZawalski/embodied-CoT](https://github.com/MichalZawalski/embodied-CoT) | Reasoning-before-acting VLA built on OpenVLA; uses same LIBERO eval stack as OpenVLA with this checkpoint. |
+| **DeepThinkVLA** | [yinchenghust/deepthinkvla_libero_cot_rl](https://huggingface.co/yinchenghust/deepthinkvla_libero_cot_rl) (3B, LIBERO CoT+RL). Repo: [OpenBMB/DeepThinkVLA](https://github.com/OpenBMB/DeepThinkVLA); LIBERO eval: [wadeKeith/DeepThinkVLA_libero_plus](https://github.com/wadeKeith/DeepThinkVLA_libero_plus) | Hybrid decoder; HF checkpoint for LIBERO. |
+| **MolmoAct** | [allenai/MolmoAct-7B-D-LIBERO-Spatial-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Spatial-0812), [allenai/MolmoAct-7B-D-LIBERO-Object-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Object-0812), [allenai/MolmoAct-7B-D-LIBERO-Goal-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Goal-0812), [allenai/MolmoAct-7B-D-LIBERO-Long-0812](https://huggingface.co/allenai/MolmoAct-7B-D-LIBERO-Long-0812). Base: [allenai/MolmoAct-7B-D-0812](https://huggingface.co/allenai/MolmoAct-7B-D-0812) | One HF model per LIBERO suite; [MolmoAct collection](https://huggingface.co/collections/allenai/molmoact). |
 | **InternVLA-M1** | [InternRobotics/InternVLA-M1-LIBERO-Spatial](https://huggingface.co/InternRobotics/InternVLA-M1-LIBERO-Spatial), [InternRobotics/InternVLA-M1-LIBERO-Long](https://huggingface.co/InternRobotics/InternVLA-M1-LIBERO-Long), [InternRobotics/InternVLA-M1](https://huggingface.co/InternRobotics/InternVLA-M1) | Per-suite or base; see repo for Object/Goal if added. |
-| **StarVLA** | [StarVLA/Qwen3-VL-PI-LIBERO-4in1](https://huggingface.co/StarVLA/Qwen3-VL-PI-LIBERO-4in1) (LIBERO 4-in-1; ~97.5% at 100k steps) | Single checkpoint for all 4 LIBERO suites. [StarVLA LIBERO collection](https://huggingface.co/collections/StarVLA/libero). |
-| **LightVLA** | [TTJiang/LightVLA-libero-spatial](https://huggingface.co/TTJiang/LightVLA-libero-spatial), [TTJiang/LightVLA-libero-object](https://huggingface.co/TTJiang/LightVLA-libero-object), [TTJiang/LightVLA-libero-goal](https://huggingface.co/TTJiang/LightVLA-libero-goal), [TTJiang/LightVLA-libero-10](https://huggingface.co/TTJiang/LightVLA-libero-10). [LiAutoAD/LightVLA](https://github.com/LiAutoAD/LightVLA) LIBERO.md for eval | One HF model per LIBERO suite (8B). |
 
 ---
 
@@ -51,14 +44,14 @@ pip install huggingface_hub
 python -m eval.download_checkpoints
 
 # Download for specific model(s)
-python -m eval.download_checkpoints --model xvla
-python -m eval.download_checkpoints --models openvla,starvla,molmoact
+python -m eval.download_checkpoints --model openvla
+python -m eval.download_checkpoints --models openvla,molmoact,ecot
 
 # List repo_ids that would be downloaded (no download)
 python -m eval.download_checkpoints --list
 ```
 
-Downloads go to the Hugging Face cache (`$AGENT_ATTACK_CACHE/huggingface` or `./.cache/huggingface`). **All eval entry points** (`run_libero_eval`, `run_one_model`, `run_all_libero_evals_parallel`, `eval.external.run`) set `HF_HOME` / `HF_HUB_CACHE` / `TRANSFORMERS_CACHE` to this same path, so after you run `download_checkpoints`, model checkpoints are **loaded automatically from cache** when you run evaluation (no extra config). The list of repo_ids per model is in `eval/external/configs.py` (`HF_CHECKPOINTS_FOR_EVAL`). OpenPI π0/π0.5 native runs use GCS by default; the script also downloads the LeRobot HF mirrors for reference or LeRobot-based workflows.
+Downloads go to the Hugging Face cache (`$AGENT_ATTACK_CACHE/huggingface` or `./.cache/huggingface`). **All eval entry points** (`run_libero_eval`, `run_one_model`, `run_all_libero_evals_parallel`, `eval.external.run`) set `HF_HOME` / `HF_HUB_CACHE` / `TRANSFORMERS_CACHE` to this same path, so after you run `download_checkpoints`, model checkpoints are **loaded automatically from cache** when you run evaluation (no extra config). The list of repo_ids per model is in `eval/external/configs.py` (`HF_CHECKPOINTS_FOR_EVAL`). OpenPI π0.5 native runs use GCS by default; the script also downloads the LeRobot HF mirrors for reference or LeRobot-based workflows.
 
 ---
 
@@ -100,18 +93,14 @@ From `agent_attack_framework` you can run or print eval commands for every model
 
 | Model | Eval code / command |
 |-------|---------------------|
-| **OpenPI π0** | `python -m eval.run_libero_eval --model openpi_pi0` (native) |
 | **OpenPI π0.5** | `python -m eval.run_libero_eval --model openpi_pi05` (native) |
 | **OpenVLA** | `python -m eval.run_libero_eval --model openvla --repo_path /path/to/openvla` or `--print_cmd` to print per-suite commands |
-| **X-VLA** | `python -m eval.run_libero_eval --model xvla` (no repo needed; uses `lerobot-eval` if installed) or `--print_cmd` |
 | **MolmoAct** | `python -m eval.run_libero_eval --model molmoact --repo_path /path/to/molmoact [--print_cmd]` |
 | **DeepThinkVLA** | `python -m eval.run_libero_eval --model deepthinkvla --repo_path /path/to/DeepThinkVLA [--print_cmd]` |
 | **ECoT** | `python -m eval.run_libero_eval --model ecot --repo_path /path/to/openvla` (uses OpenVLA repo + checkpoint Embodied-CoT/ecot-openvla-7b-bridge) or `--print_cmd` |
 | **InternVLA-M1** | `python -m eval.run_libero_eval --model internvla_m1 --repo_path /path/to/InternVLA-M1 [--print_cmd]` |
-| **StarVLA** | `python -m eval.run_libero_eval --model starvla` (no repo; uses `lerobot-eval` + StarVLA/Qwen3-VL-PI-LIBERO-4in1) or `--print_cmd` |
-| **LightVLA** | `python -m eval.run_libero_eval --model lightvla --repo_path /path/to/LightVLA [--print_cmd]` |
 
-Native runs (openpi_pi0, openpi_pi05) execute full eval in-process and write `eval/results/<model>_<timestamp>.json`. External models run their repo’s eval script(s); output is logged under `eval/results/<model>_external_<timestamp>.log` and a placeholder JSON is written. Use `--episodes_per_task` and `--seed` for comparable settings (defaults: 5, 42).
+Native runs (openpi_pi05) execute full eval in-process and write `eval/results/<model>_<timestamp>.json`. External models run their repo’s eval script(s); output is logged under `eval/results/<model>_external_<timestamp>.log` and a placeholder JSON is written. Use `--episodes_per_task` and `--seed` for comparable settings (defaults: 5, 42).
 
 ### Run each model separately (copy-paste commands)
 
@@ -119,16 +108,12 @@ From `agent_attack_framework` (same defaults: 5 episodes per task, seed 42, all 
 
 | Model | Command |
 |-------|--------|
-| **openpi_pi0** | `python -m eval.run_libero_eval --model openpi_pi0` |
 | **openpi_pi05** | `python -m eval.run_libero_eval --model openpi_pi05` |
 | **openvla** | `python -m eval.run_libero_eval --model openvla --repo_path /path/to/openvla` |
-| **xvla** | `python -m eval.run_libero_eval --model xvla` |
 | **molmoact** | `python -m eval.run_libero_eval --model molmoact --repo_path /path/to/molmoact` |
 | **deepthinkvla** | `python -m eval.run_libero_eval --model deepthinkvla --repo_path /path/to/DeepThinkVLA` |
 | **ecot** | `python -m eval.run_libero_eval --model ecot --repo_path /path/to/openvla` |
 | **internvla_m1** | `python -m eval.run_libero_eval --model internvla_m1 --repo_path /path/to/InternVLA-M1` |
-| **starvla** | `python -m eval.run_libero_eval --model starvla` |
-| **lightvla** | `python -m eval.run_libero_eval --model lightvla --repo_path /path/to/LightVLA` |
 
 Or use the single entry-point script (sets GPU and forwards args):
 
@@ -141,14 +126,11 @@ python -m eval.run_one_model --model openvla --repo_path /path/to/openvla --gpu 
 
 ## Native evaluation (this repo)
 
-**OpenPI π0 and π0.5** are supported directly. Run from `agent_attack_framework`:
+**OpenPI π0.5** is supported directly. Run from `agent_attack_framework`:
 
 ```bash
 # Pi0.5 (LIBERO-finetuned) on all 4 suites, 5 episodes per task
 python -m eval.run_libero_eval --model openpi_pi05 --suites spatial,object,goal,long --episodes_per_task 5 --seed 42
-
-# Pi0 (zero-shot from pi0_base) on same setup
-python -m eval.run_libero_eval --model openpi_pi0 --suites spatial,object,goal,long --episodes_per_task 5 --seed 42
 
 # Test split only (tasks 7–9 per suite), 10 episodes per task
 python -m eval.run_libero_eval --model openpi_pi05 --task_ids 7-9 --episodes_per_task 10 --seed 42
@@ -174,14 +156,11 @@ The following models are **not** run by `eval.run_libero_eval`; use their offici
 | **ECoT** | [MichalZawalski/embodied-CoT](https://github.com/MichalZawalski/embodied-CoT) | [Embodied-CoT/ecot-openvla-7b-bridge](https://huggingface.co/Embodied-CoT/ecot-openvla-7b-bridge) | Use OpenVLA repo LIBERO eval with checkpoint above; same episodes/seed |
 | **InternVLA-M1** | [InternRobotics/InternVLA-M1](https://github.com/InternRobotics/InternVLA-M1) | [InternRobotics/InternVLA-M1-LIBERO-Spatial](https://huggingface.co/InternRobotics/InternVLA-M1-LIBERO-Spatial) | Use repo's LIBERO reproduction instructions |
 
-### Strong baselines (4)
+### Strong baselines (1)
 
 | Model | GitHub | Hugging Face | LIBERO eval |
 |-------|--------|--------------|-------------|
 | **OpenVLA** | [openvla/openvla](https://github.com/openvla/openvla) | [openvla/openvla-7b-finetuned-libero-*](https://huggingface.co/openvla?search=libero) | Use repo's LIBERO suite checkpoints and documented eval commands; match episodes/seed |
-| **StarVLA** (LIBERO-4in1) | (see HF org) | [StarVLA](https://huggingface.co/StarVLA) | Use LIBERO eval flow and released LIBERO checkpoint; same episodes/seed if supported |
-| **X-VLA** | [2toinf/X-VLA](https://github.com/2toinf/X-VLA), [huggingface/lerobot](https://github.com/huggingface/lerobot) | [lerobot/xvla-libero](https://huggingface.co/lerobot/xvla-libero) | Use LeRobot/xvla-libero eval; align with LeRobot-style or OpenVLA-style eval as documented |
-| **LightVLA** | [LiAutoAD/LightVLA](https://github.com/LiAutoAD/LightVLA) | [TTJiang/models](https://huggingface.co/TTJiang/models) (search `lightvla`) | Follow LIBERO.md in repo; same episodes/seed where configurable |
 
 ---
 
@@ -235,9 +214,9 @@ Use this format as a template when mapping external model outputs into the same 
 
 ---
 
-## Eval all 10 models in parallel (4 GPUs, CPU workers)
+## Eval all 6 models in parallel (4 GPUs, CPU workers)
 
-The **10 models** are: **openpi_pi0**, **openpi_pi05**, **openvla**, **xvla**, **molmoact**, **deepthinkvla**, **ecot**, **internvla_m1**, **starvla**, **lightvla**. StarVLA runs via `lerobot-eval` with checkpoint [StarVLA/Qwen3-VL-PI-LIBERO-4in1](https://huggingface.co/StarVLA/Qwen3-VL-PI-LIBERO-4in1) (no repo needed).
+The **6 models** are: **openpi_pi05**, **openvla**, **molmoact**, **deepthinkvla**, **ecot**, **internvla_m1**.
 
 From `agent_attack_framework`, run all VLAs on LIBERO 4 suites with work distributed across 4 GPUs and parallel MuJoCo/LIBERO envs on CPU:
 
@@ -248,21 +227,21 @@ python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --cpu_workers 4
 # Or use the wrapper script (activates vast if conda is available):
 ./eval/run_all_libero_evals_vast.sh
 
-# All 10 models, 4 GPUs, 4 parallel env threads per native model (without conda)
+# All 6 models, 4 GPUs, 4 parallel env threads per native model (without conda)
 python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --cpu_workers 4
 
 # Subset of models
-python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --models openpi_pi05,openpi_pi0,openvla,xvla
+python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --models openpi_pi05,openvla,ecot,deepthinkvla
 
-# External models: optional --repo_paths; if omitted, repos are auto-cloned to .cache/repos/<model> (requires git). X-VLA needs no repo (policy from HF).
+# External models: optional --repo_paths; if omitted, repos are auto-cloned to .cache/repos/<model> (requires git).
 python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --repo_paths openvla=/path/to/openvla,molmoact=/path/to/molmoact
 ```
 
 - **Repos directory:** Put cloned repos in **`agent_attack_framework/repos/<model_id>`** (e.g. `repos/openvla`, `repos/molmoact`) and the eval will use them with no `--repo_path` or `--repo_paths`. For ECoT you can use `repos/ecot` or `repos/openvla` (same OpenVLA repo).
-- **Auto-clone:** If `--repo_paths` is not set and a repo is not in `repos/<model_id>`, OpenVLA, MolmoAct, DeepThinkVLA, ECoT, InternVLA-M1, and LightVLA are cloned from GitHub into `.cache/repos/<model_id>`. **X-VLA** and **StarVLA** use `lerobot-eval` and pull the policy from HuggingFace (no repo needed).
+- **Auto-clone:** If `--repo_paths` is not set and a repo is not in `repos/<model_id>`, OpenVLA, MolmoAct, DeepThinkVLA, ECoT, and InternVLA-M1 are cloned from GitHub into `.cache/repos/<model_id>`.
 - **Progress:** Each model logs "Running &lt;model&gt; on GPU &lt;id&gt;..." so long-running native evals don't appear stuck.
 - **GPU distribution:** Models are assigned 2–3 per GPU (configurable with `--models_per_gpu`); each GPU runs its models sequentially.
-- **CPU parallelism:** For native models (openpi_pi0, openpi_pi05), `--cpu_workers N` runs N LIBERO/MuJoCo envs in parallel (thread pool); model inference is serialized so CPU cores are used for stepping.
+- **CPU parallelism:** For native models (openpi_pi05), `--cpu_workers N` runs N LIBERO/MuJoCo envs in parallel (thread pool); model inference is serialized so CPU cores are used for stepping.
 - **Output:** Per-model result JSONs in `eval/results/`, plus an aggregated `all_models_metrics_<timestamp>.json` with per-suite and per-task breakdown. The console prints an overall + per-suite table and a per-task breakdown by category (each suite with success rate per task ID).
 
 ### Why you might see errors
@@ -271,7 +250,7 @@ python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --repo_paths openvla
 |--------|--------|-----|
 | **Skipped: no repo** (other external) | An external model has no auto-clone URL and no `--repo_paths` was given. | Provide `--repo_paths <model>=/path` for that model, or add a cloneable repo in code. |
 | **No result JSON found** (or **done -> None** for an external model) | The external eval subprocess ran but did not write the expected `&lt;model&gt;_external_&lt;ts&gt;.json` under `eval/results/`. Often the repo’s eval command failed (missing deps, wrong script path, or timeout). | Check `eval/results/&lt;model&gt;_*.log` for the subprocess stdout/stderr. Install the model’s dependencies and ensure its eval script runs when you `cd` into the cloned repo. |
-| **Traceback … No module named 'jax'** (openpi_pi0 / openpi_pi05) | Native OpenPI models need JAX and the OpenPI package. | Install JAX and OpenPI (see INSTALL.md), or run only external models with `--models openvla,xvla,molmoact,...`. |
+| **Traceback … No module named 'jax'** (openpi_pi05) | Native OpenPI models need JAX and the OpenPI package. | Install JAX and OpenPI (see INSTALL.md), or run only external models with `--models openvla,molmoact,...`. |
 
 ---
 
@@ -285,4 +264,4 @@ python -m eval.test_all_vlas
 pytest eval/test_all_vlas.py -v
 ```
 
-This checks that every model (native + external) has a config, that `get_commands()` returns valid commands for external models, and that `run_libero_eval --model <id> --print_cmd` exits 0 for all 10. Native model load is skipped if OpenPI/JAX is not installed.
+This checks that every model (native + external) has a config, that `get_commands()` returns valid commands for external models, and that `run_libero_eval --model <id> --print_cmd` exits 0 for all 6. Native model load is skipped if OpenPI/JAX is not installed.

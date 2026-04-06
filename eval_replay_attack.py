@@ -50,7 +50,7 @@ _pre_parser.add_argument("--victim", type=str, default="openvla")
 _pre_parser.add_argument("--vla_gpu", type=str, default="0")
 _pre_args, _ = _pre_parser.parse_known_args()
 
-_IS_JAX_VICTIM = _pre_args.victim.lower().replace("-", "_") in ("openpi_pi0", "openpi_pi05")
+_IS_JAX_VICTIM = _pre_args.victim.lower().replace("-", "_") == "openpi_pi05"
 _VLA_GPU = str(_pre_args.vla_gpu)
 os.environ["CUDA_VISIBLE_DEVICES"] = _VLA_GPU
 
@@ -454,8 +454,8 @@ def main():
     )
     parser.add_argument(
         "--victim", type=str, required=True,
-        help="Victim VLA model: openpi_pi0, openpi_pi05, openvla, ecot, "
-             "lightvla, deepthinkvla, molmoact, internvla_m1",
+        help="Victim VLA model: openpi_pi05, openvla, ecot, "
+             "deepthinkvla, molmoact, internvla_m1",
     )
     parser.add_argument("--vla_gpu", type=str, default="0")
     parser.add_argument("--vla_checkpoint", type=str, default=None)

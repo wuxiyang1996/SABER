@@ -22,7 +22,7 @@ if ! command -v conda &>/dev/null; then
 fi
 
 echo ">>> Initializing RunPod env: conda env 'runpod'"
-bash install.sh runpod "$@"
+bash "${SCRIPT_DIR}/install.sh" runpod "$@"
 echo ""
 echo ">>> Done. Activate with:  conda activate runpod"
 echo ">>> Then run training:    bash run_train.sh"

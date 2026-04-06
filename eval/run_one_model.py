@@ -6,7 +6,7 @@ that adds --gpu and forwards all other args.
 Usage (from agent_attack_framework):
     python -m eval.run_one_model --model openpi_pi05
     python -m eval.run_one_model --model openvla --repo_path /path/to/openvla --gpu 0
-    python -m eval.run_one_model --model starvla --gpu 1 --episodes_per_task 5 --seed 42
+    python -m eval.run_one_model --model ecot --gpu 1 --episodes_per_task 5 --seed 42
 """
 
 from __future__ import annotations

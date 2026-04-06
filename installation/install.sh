@@ -24,7 +24,8 @@ for arg in "$@"; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE="$(dirname "$SCRIPT_DIR")"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+WORKSPACE="$(dirname "$REPO_DIR")"
 
 # LIBERO location: env var > ../LIBERO > skip
 LIBERO_ROOT="${LIBERO_ROOT:-${WORKSPACE}/LIBERO}"
@@ -35,7 +36,7 @@ echo "============================================"
 echo "Agent Attack Framework — Installer"
 echo "============================================"
 echo "  Env name:       ${ENV_NAME}"
-echo "  Framework:      ${SCRIPT_DIR}"
+echo "  Framework:      ${REPO_DIR}"
 echo "  Workspace:      ${WORKSPACE}"
 echo "  LIBERO:         ${LIBERO_ROOT}"
 echo "  Skip conda:     ${SKIP_CONDA}"
@@ -91,11 +92,11 @@ pip install "numpy>=2" "jax[cuda12]==0.5.3"
 # ------------------------------------------------------------------
 echo ""
 echo ">>> [4/8] Installing requirements.txt..."
-pip install -r "${SCRIPT_DIR}/requirements.txt" || {
+pip install -r "${REPO_DIR}/requirements.txt" || {
     echo ""
     echo "    pip install failed. Trying fallback: install openpipe-art without backend extra..."
     pip install "openpipe-art[langgraph]==0.5.9"
-    pip install -r "${SCRIPT_DIR}/requirements.txt" --no-deps
+    pip install -r "${REPO_DIR}/requirements.txt" --no-deps
 }
 
 # ------------------------------------------------------------------
@@ -152,7 +153,7 @@ fi
 # ------------------------------------------------------------------
 echo ""
 echo ">>> [7/8] Applying ART ↔ vLLM 0.11.x compatibility patches..."
-python "${SCRIPT_DIR}/scripts/apply_vllm_patches.py"
+python "${SCRIPT_DIR}/apply_vllm_patches.py"
 
 # ------------------------------------------------------------------
 # 8. Verify
@@ -161,9 +162,9 @@ echo ""
 echo ">>> [8/8] Running import verification..."
 MUJOCO_GL=egl PYOPENGL_PLATFORM=egl python -c "
 import sys, os
-sys.path.insert(0, '${SCRIPT_DIR}')
-sys.path.insert(0, '${SCRIPT_DIR}/libero_rollouts')
-sys.path.insert(0, '${SCRIPT_DIR}/tools')
+sys.path.insert(0, '${REPO_DIR}')
+sys.path.insert(0, '${REPO_DIR}/libero_rollouts')
+sys.path.insert(0, '${REPO_DIR}/tools')
 
 failed = []
 checks = [
@@ -173,7 +174,7 @@ checks = [
     ('art',               'import art'),
     ('langgraph',         'import langgraph'),
     ('unsloth',           'import unsloth'),
-    ('openpi',            'exec(\"import sys,os; sys.path.insert(0, os.path.join(\\\"${SCRIPT_DIR}\\\", \\\"openpi\\\", \\\"src\\\")); from openpi.policies import policy_config\")'),
+    ('openpi',            'exec(\"import sys,os; sys.path.insert(0, os.path.join(\\\"${REPO_DIR}\\\", \\\"openpi\\\", \\\"src\\\")); from openpi.policies import policy_config\")'),
     ('libero',            'import libero'),
     ('libero.envs',       'from libero.libero.envs import OffScreenRenderEnv'),
     ('robosuite',         'import robosuite'),
@@ -207,7 +208,7 @@ echo "============================================"
 echo "Installation complete!"
 echo ""
 echo "To activate:   conda activate ${ENV_NAME}"
-echo "To run:        cd ${SCRIPT_DIR}"
+echo "To run:        cd ${REPO_DIR}"
 echo "               python run.py vla --vla_gpus 0,1,2 --attack_gpus 3 \\"
 echo "                 --task_suite libero_spatial --task_ids 0,1,2"
 echo "============================================"

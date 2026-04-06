@@ -9,8 +9,8 @@ evaluation tools (lerobot-eval, OpenVLA repo, etc.) will use them automatically.
 Usage (from agent_attack_framework):
     pip install huggingface_hub
     python -m eval.download_checkpoints              # all models
-    python -m eval.download_checkpoints --model xvla  # one model
-    python -m eval.download_checkpoints --models openvla,starvla,xvla
+    python -m eval.download_checkpoints --model openvla  # one model
+    python -m eval.download_checkpoints --models openvla,ecot,molmoact
 """
 
 from __future__ import annotations
@@ -43,13 +43,13 @@ def main() -> int:
         "--model",
         type=str,
         default=None,
-        help="Download checkpoints for this model only (e.g. xvla, starvla).",
+        help="Download checkpoints for this model only (e.g. openvla, ecot).",
     )
     parser.add_argument(
         "--models",
         type=str,
         default=None,
-        help="Comma-separated list of models (e.g. openvla,starvla,xvla). Overrides --model.",
+        help="Comma-separated list of models (e.g. openvla,ecot,molmoact). Overrides --model.",
     )
     parser.add_argument(
         "--list",

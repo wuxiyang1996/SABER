@@ -2,28 +2,28 @@
 
 This guide sets up the conda environment and dependencies for **SABER** — adversarial VLA attacks on Pi0.5 in LIBERO.
 
-> **Quick install:** If you prefer a single command that does everything below, run `bash install.sh` (see [Quick install](#quick-install)).
+> **Quick install:** If you prefer a single command that does everything below, run `bash installation/install.sh` (see [Quick install](#quick-install)).
 
 ---
 
 ## Quick install
 
-The `install.sh` script automates all of steps 1–8 below in one command:
+The `installation/install.sh` script automates all of steps 1–8 below in one command:
 
 ```bash
 # Clone LIBERO first (if not already present alongside this repo)
 git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
 
 # One-command install (creates conda env "vast" with Python 3.11)
-bash install.sh
+bash installation/install.sh
 ```
 
 Options:
 
 ```bash
-bash install.sh myenv              # custom env name
-bash install.sh vast --skip-conda  # skip conda create if env already exists
-LIBERO_ROOT=/path/to/LIBERO bash install.sh   # custom LIBERO location
+bash installation/install.sh myenv              # custom env name
+bash installation/install.sh vast --skip-conda  # skip conda create if env already exists
+LIBERO_ROOT=/path/to/LIBERO bash installation/install.sh   # custom LIBERO location
 ```
 
 If you need finer control over each step, follow the manual instructions below.
@@ -151,7 +151,7 @@ assets: ${LIBERO_PKG}/assets
 YAML
 ```
 
-> **Note:** `install.sh` writes this config automatically.
+> **Note:** `installation/install.sh` writes this config automatically.
 
 ### 5.4 LIBERO `torch.load` patch (PyTorch 2.6+)
 
@@ -184,7 +184,7 @@ sed -i 's/torch\.load(\(.*\))/torch.load(\1, weights_only=False)/g' \
   libero/lifelong/utils.py
 ```
 
-> **Note:** `install.sh` applies this patch automatically.
+> **Note:** `installation/install.sh` applies this patch automatically.
 
 ### 5.5 Optional: openpi-client
 
@@ -201,7 +201,7 @@ pip install openpi-client --no-deps
 ART (openpipe-art 0.5.9) targets vLLM ≥ 0.16 APIs that don't exist in vLLM 0.11.x. Apply these patches before running VLA training:
 
 ```bash
-python scripts/apply_vllm_patches.py
+python installation/apply_vllm_patches.py
 ```
 
 The script applies seven patches (see **README.md** → "Required patches" for details):
@@ -224,7 +224,7 @@ From `agent_attack_framework/`:
 
 ```bash
 conda activate vast
-python scripts/check_libero_env.py
+python installation/check_libero_env.py
 ```
 
 The script checks:
@@ -264,8 +264,8 @@ Different VLA victim models require incompatible `transformers` versions (and ot
 Create all VLA envs at once:
 
 ```bash
-bash scripts/setup_vla_envs.sh              # all 4 envs
-bash scripts/setup_vla_envs.sh vla_models   # single env
+bash installation/setup_vla_envs.sh              # all 4 envs
+bash installation/setup_vla_envs.sh vla_models   # single env
 ```
 
 ### Override
@@ -307,9 +307,9 @@ See **RUN.md** for more options and troubleshooting.
 | EGL / headless rendering | Missing libEGL or Mesa | Set `MUJOCO_GL=egl`, `PYOPENGL_PLATFORM=egl` **before** starting Python (e.g. at top of run script). Install: `conda install -c conda-forge libopengl mesalib`. If EGL still fails (e.g. `'NoneType' object has no attribute 'eglQueryString'`), use: `MUJOCO_GL=osmesa PYOPENGL_PLATFORM=osmesa` (slower). |
 | PYTORCH_CUDA_ALLOC_CONF deprecated | PyTorch 2.6+ | Use `PYTORCH_ALLOC_CONF` instead; this is a warning only. |
 | `model-service` killed by signal 6 / `std::bad_alloc` | `torchcodec` 0.5 incompatible with PyTorch 2.9+ | `pip install --upgrade torchcodec` (need ≥0.6). |
-| `ModuleNotFoundError: No module named 'vllm.tool_parsers'` | ART targets vLLM ≥0.16 import paths | Run `python scripts/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
-| `EngineDeadError` during training | ART's `run_on_workers` bypasses vLLM EngineCore | Run `python scripts/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
-| `ValueError: ...loaded in 8-bit or 4-bit precision on a different device` | Unsloth sets `is_loaded_in_8bit=True` on all models (even bf16) to block DDP; accelerate detects device mismatch in split-GPU mode | Run `python scripts/apply_vllm_patches.py` (patches 7 & 8) — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
+| `ModuleNotFoundError: No module named 'vllm.tool_parsers'` | ART targets vLLM ≥0.16 import paths | Run `python installation/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
+| `EngineDeadError` during training | ART's `run_on_workers` bypasses vLLM EngineCore | Run `python installation/apply_vllm_patches.py` — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
+| `ValueError: ...loaded in 8-bit or 4-bit precision on a different device` | Unsloth sets `is_loaded_in_8bit=True` on all models (even bf16) to block DDP; accelerate detects device mismatch in split-GPU mode | Run `python installation/apply_vllm_patches.py` (patches 7 & 8) — see [§6](#6-apply-art--vllm-011x-compatibility-patches). |
 
 ---
 
@@ -324,6 +324,6 @@ See **RUN.md** for more options and troubleshooting.
 - [ ] LIBERO `__init__.py` present at `LIBERO/libero/__init__.py`
 - [ ] LIBERO config `~/.libero/config.yaml` has all 5 keys
 - [ ] LIBERO `torch.load` patched for PyTorch 2.6+ (`weights_only=False`)
-- [ ] ART ↔ vLLM patches applied: `python scripts/apply_vllm_patches.py`
-- [ ] `python scripts/check_libero_env.py` passes
-- [ ] VLA model envs created: `bash scripts/setup_vla_envs.sh` (see [§8](#8-vla-model-environments-per-model-conda-envs))
+- [ ] ART ↔ vLLM patches applied: `python installation/apply_vllm_patches.py`
+- [ ] `python installation/check_libero_env.py` passes
+- [ ] VLA model envs created: `bash installation/setup_vla_envs.sh` (see [§8](#8-vla-model-environments-per-model-conda-envs))

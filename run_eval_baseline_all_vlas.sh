@@ -17,7 +17,7 @@
 # Usage:
 #   bash run_eval_baseline_all_vlas.sh                                # all 8+ models
 #   bash run_eval_baseline_all_vlas.sh openvla                       # single model
-#   bash run_eval_baseline_all_vlas.sh openvla lightvla ecot         # specific models
+#   bash run_eval_baseline_all_vlas.sh openvla ecot deepthinkvla     # specific models
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -50,7 +50,7 @@ mkdir -p "$OUTPUT_DIR"
 if [[ $# -gt 0 ]]; then
   MODELS_CSV=$(IFS=,; echo "$*")
 else
-  MODELS_CSV="openpi_pi0,openpi_pi05,openvla,lightvla,deepthinkvla,ecot,molmoact,internvla_m1"
+  MODELS_CSV="openpi_pi05,openvla,deepthinkvla,ecot,molmoact,internvla_m1"
 fi
 
 echo "========================================"

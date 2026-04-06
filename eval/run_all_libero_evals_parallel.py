@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Eval all 10 VLAs on LIBERO 4 suites in parallel across 4 GPUs.
+Eval all 6 paper VLAs on LIBERO 4 suites in parallel across 4 GPUs.
 
 - Assigns 2-3 models per GPU (configurable via --models_per_gpu); each GPU runs
   its models sequentially so we load and run multiple models on the same GPU.
@@ -11,7 +11,7 @@ Eval all 10 VLAs on LIBERO 4 suites in parallel across 4 GPUs.
 Usage (from agent_attack_framework):
     python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3
     python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --models_per_gpu 3
-    python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --models openpi_pi05,openpi_pi0,openvla,xvla --cpu_workers 8
+    python -m eval.run_all_libero_evals_parallel --gpus 0,1,2,3 --models openpi_pi05,openvla,ecot --cpu_workers 8
 """
 
 from __future__ import annotations
@@ -41,7 +41,6 @@ _EXTERNAL_REPO_GITHUB = {
     "deepthinkvla": "https://github.com/OpenBMB/DeepThinkVLA",
     "ecot": "https://github.com/openvla/openvla",
     "internvla_m1": "https://github.com/InternRobotics/InternVLA-M1",
-    "lightvla": "https://github.com/LiAutoAD/LightVLA",
 }
 
 
@@ -104,7 +103,7 @@ def _ensure_repo_available(model_id: str) -> Optional[str]:
 
 
 ALL_MODELS = list(NATIVE_MODELS) + [
-    "openvla", "xvla", "molmoact", "deepthinkvla", "ecot", "internvla_m1", "starvla", "lightvla",
+    "openvla", "molmoact", "deepthinkvla", "ecot", "internvla_m1",
 ]
 DEFAULT_SUITES = "spatial,object,goal,long"
 DEFAULT_TASK_IDS = "0-9"
@@ -241,9 +240,9 @@ def run_one_model_eval(
     else:
         # External model: use provided repo_path or try to auto-download (clone) the repo
         repo_path = repo_paths.get(model_id, "")
-        if not repo_path and model_id not in ("xvla", "starvla"):
+        if not repo_path:
             repo_path = _ensure_repo_available(model_id)
-        if not repo_path and model_id not in ("xvla", "starvla"):
+        if not repo_path:
             return (model_id, gpu_id, None, f"Skipped: no repo (use --repo_paths {model_id}=/path to run)")
         cmd = [
             sys.executable, "-m", "eval.external.run",
@@ -385,7 +384,7 @@ def aggregate_metrics(result_paths: Dict[str, Optional[str]]) -> Dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Eval all 10 VLAs on LIBERO in parallel across 4 GPUs.",
+        description="Eval all 6 paper VLAs on LIBERO in parallel across 4 GPUs.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--gpus", type=str, default="0,1,2,3", help="Comma-separated GPU ids")

@@ -7,11 +7,11 @@ episode counts and seed for comparable results. Outputs JSON to eval/results/.
 
 Usage (from agent_attack_framework):
     python -m eval.run_libero_eval --model openpi_pi05 --suites spatial,object,goal,long
-    python -m eval.run_libero_eval --model openpi_pi0 --episodes_per_task 5 --seed 42
+    python -m eval.run_libero_eval --model openpi_pi05 --episodes_per_task 5 --seed 42
 
-For external models (OpenVLA, X-VLA, MolmoAct, etc.) use --model <id> and
-optionally --repo_path; they are run via eval.external.run. Native models:
-openpi_pi0, openpi_pi05.
+For external models (OpenVLA, MolmoAct, etc.) use --model <id> and
+optionally --repo_path; they are run via eval.external.run. Native model:
+openpi_pi05.
 """
 
 from __future__ import annotations
@@ -94,13 +94,13 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     all_models = list(NATIVE_MODELS) + [
-        "openvla", "xvla", "molmoact", "deepthinkvla", "ecot", "internvla_m1", "starvla", "lightvla",
+        "openvla", "molmoact", "deepthinkvla", "ecot", "internvla_m1",
     ]
     parser.add_argument(
         "--model",
         type=str,
         default="openpi_pi05",
-        help="Model: openpi_pi0, openpi_pi05, or external (openvla, xvla, molmoact, deepthinkvla, ecot, internvla_m1, starvla, lightvla).",
+        help="Model: openpi_pi05, or external (openvla, molmoact, deepthinkvla, ecot, internvla_m1).",
     )
     parser.add_argument(
         "--suites",
@@ -183,7 +183,7 @@ def main():
         # Dispatch to external runner; use repos/<model_id> if present and --repo_path not set
         from eval.external.run import get_commands, run_commands, resolve_repo_path_from_dirs
         args.repo_path = args.repo_path or resolve_repo_path_from_dirs(model_id)
-        if not args.print_cmd and model_id not in ("xvla", "starvla") and not args.repo_path:
+        if not args.print_cmd and not args.repo_path:
             print("For external model '%s' provide --repo_path or put the repo in agent_attack_framework/repos/%s." % (model_id, model_id), file=sys.stderr)
             return 1
         commands = get_commands(
@@ -207,7 +207,7 @@ def main():
         )
 
     if model_id not in NATIVE_MODELS:
-        print(f"Unknown model: {args.model}. Native: {list(NATIVE_MODELS)}. External: openvla, xvla, molmoact, deepthinkvla, ecot, internvla_m1, starvla, lightvla.", file=sys.stderr)
+        print(f"Unknown model: {args.model}. Native: {list(NATIVE_MODELS)}. External: openvla, molmoact, deepthinkvla, ecot, internvla_m1.", file=sys.stderr)
         return 1
 
     # Native models: --print_cmd just confirms the model and suite layout (no model load)

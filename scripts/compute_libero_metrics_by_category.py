@@ -219,7 +219,7 @@ def process_file(path: Path, data: dict) -> dict | None:
 
 def collect_result_paths() -> list[Path]:
     paths = []
-    # eval_result: all replay_*.json (preferred for openpi_pi05 and openpi_pi0 task_failure)
+    # eval_result: all replay_*.json (preferred for openpi_pi05 task_failure)
     eval_result = OUTPUTS / "eval_result"
     if eval_result.exists():
         for f in eval_result.glob("replay_*.json"):
@@ -262,7 +262,7 @@ def main():
         out = process_file(path, data)
         if out:
             results.append(out)
-    # Prefer eval_result replay files when duplicate (victim, objective) exist (task_failure, action_inflation, constraint_violation; e.g. openpi_pi05/openpi_pi0)
+    # Prefer eval_result replay files when duplicate (victim, objective) exist (task_failure, action_inflation, constraint_violation)
     results = prefer_eval_result_replay(results)
 
     # --- Text report ---

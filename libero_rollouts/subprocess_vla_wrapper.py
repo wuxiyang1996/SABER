@@ -82,15 +82,6 @@ class SubprocessVLAWrapper:
                 )
                 env[path_var] = cleaned
 
-        # Add Isaac-GR00T repo to PYTHONPATH for groot model loading
-        groot_repo = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "repos", "groot",
-        )
-        if os.path.isdir(groot_repo):
-            pp = env.get("PYTHONPATH", "")
-            env["PYTHONPATH"] = f"{groot_repo}:{pp}" if pp else groot_repo
-
         # Add openvla-mini repo to PYTHONPATH for InspireVLA (Prismatic) loading
         openvla_mini_repo = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),

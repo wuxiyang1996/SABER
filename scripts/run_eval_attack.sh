@@ -9,7 +9,7 @@
 # Usage:
 #   bash scripts/run_eval_attack.sh task_failure                       # all models
 #   bash scripts/run_eval_attack.sh constraint_violation openvla       # single model
-#   bash scripts/run_eval_attack.sh action_inflation openvla lightvla  # specific models
+#   bash scripts/run_eval_attack.sh action_inflation openvla ecot     # specific models
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -31,7 +31,7 @@ export PYTHONUTF8=1
 # NOTE: Per-model conda environments are handled automatically by Python code.
 # model_factory.py launches non-JAX VLA models in subprocesses using
 # SubprocessVLAWrapper, which picks the correct conda env's Python binary
-# via _MODEL_ENV_MAP. See scripts/setup_vla_envs.sh for env creation.
+# via _MODEL_ENV_MAP. See installation/setup_vla_envs.sh for env creation.
 
 # ---- Objective-specific parameters ----
 case "$OBJECTIVE" in
@@ -82,7 +82,7 @@ mkdir -p "$OUTPUT_DIR"
 if [[ $# -gt 0 ]]; then
   MODELS=("$@")
 else
-  MODELS=(openpi_pi0 openpi_pi05 openvla lightvla deepthinkvla ecot molmoact internvla_m1 xvla)
+  MODELS=(openpi_pi05 openvla deepthinkvla ecot molmoact internvla_m1)
 fi
 
 run_one() {

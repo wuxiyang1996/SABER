@@ -543,7 +543,7 @@ async def train(args: argparse.Namespace) -> None:
     # AsyncEngineArgs), NOT init_args (unsloth model loader).
     # tensor_parallel_size is left at 1 (default).  With two attack GPUs
     # (e.g. 2,3), we pin vLLM to cuda:0 and Unsloth training to cuda:1
-    # (requires ART patch via scripts/apply_vllm_patches.py).
+    # (requires ART patch via installation/apply_vllm_patches.py).
     engine_args_dict = dict(
         gpu_memory_utilization=args.gpu_memory_utilization,
         enable_sleep_mode=False,
@@ -1030,7 +1030,7 @@ def main():
             "Default: all visible GPUs except --vla_gpus (e.g. '3' or '2,3' on 4 GPUs).  "
             "With one GPU: vLLM inference and Unsloth training share it.  "
             "With two (e.g. '2,3'): first GPU = vLLM inference, second = Unsloth training "
-            "(requires scripts/apply_vllm_patches.py)."
+            "(requires installation/apply_vllm_patches.py)."
         ),
     )
     parser.add_argument(

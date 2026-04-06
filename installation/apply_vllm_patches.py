@@ -45,9 +45,9 @@ Nine patches:
      This patch unwraps the extra encoding layer.
 
 Usage:
-    python scripts/apply_vllm_patches.py          # auto-detect site-packages
-    python scripts/apply_vllm_patches.py --check   # dry-run: report status only
-    python scripts/apply_vllm_patches.py --site-packages /path/to/site-packages  # when not in env
+    python installation/apply_vllm_patches.py          # auto-detect site-packages
+    python installation/apply_vllm_patches.py --check   # dry-run: report status only
+    python installation/apply_vllm_patches.py --site-packages /path/to/site-packages  # when not in env
 """
 from __future__ import annotations
 

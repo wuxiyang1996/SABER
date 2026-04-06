@@ -5,8 +5,8 @@ Maps model_id -> VLA wrapper class. All wrappers implement:
     predict(agentview_224: np.ndarray, wrist_224: np.ndarray, state_8: np.ndarray) -> np.ndarray
     predict_from_obs(obs: dict) -> np.ndarray
 
-The factory handles per-suite checkpoints (OpenVLA, LightVLA, MolmoAct, etc.)
-and returns a model ready for LIBERO rollouts.
+Supported models (paper): Pi0.5, OpenVLA, ECoT, DeepThinkVLA, MolmoAct, InternVLA-M1.
+The factory handles per-suite checkpoints and returns a model ready for LIBERO rollouts.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
-# Per-suite HuggingFace checkpoint mapping
 _SUITE_CHECKPOINTS = {
     "openvla": {
         "libero_spatial": "openvla/openvla-7b-finetuned-libero-spatial",
@@ -29,12 +28,6 @@ _SUITE_CHECKPOINTS = {
     },
     "ecot": {
         "_all": "Embodied-CoT/ecot-openvla-7b-bridge",
-    },
-    "lightvla": {
-        "libero_spatial": "TTJiang/LightVLA-libero-spatial",
-        "libero_object": "TTJiang/LightVLA-libero-object",
-        "libero_goal": "TTJiang/LightVLA-libero-goal",
-        "libero_10": "TTJiang/LightVLA-libero-10",
     },
     "deepthinkvla": {
         "_all": "yinchenghust/deepthinkvla_libero_cot_rl",
@@ -51,55 +44,21 @@ _SUITE_CHECKPOINTS = {
         "libero_goal": "InternRobotics/InternVLA-M1-LIBERO-Goal",
         "libero_10": "InternRobotics/InternVLA-M1-LIBERO-Long",
     },
-    "xvla": {
-        "_all": "2toINF/X-VLA-Libero",
-    },
-    "openvla_oft": {
-        "_all": "moojink/openvla-7b-oft-finetuned-libero-spatial-object-goal-10",
-    },
-    "smolvla": {
-        "_all": "HuggingFaceVLA/smolvla_libero",
-    },
-    "groot": {
-        "libero_spatial": "Tacoin/GR00T-N1.5-3B-LIBERO-SPATIAL-8K",
-        "libero_object": "Tacoin/GR00T-N1.5-3B-LIBERO-OBJECT-8K",
-        "libero_goal": "Tacoin/GR00T-N1.5-3B-LIBERO-GOAL-8K",
-        "libero_10": "Tacoin/GR00T-N1.5-3B-LIBERO-LONG-8K",
-    },
-    "inspirevla": {
-        "_all": "InspireVLA/minivla-inspire-libero-union4",
-    },
-    "minivla": {
-        "_all": "Stanford-ILIAD/minivla-libero90-prismatic",
-    },
-    "go1": {
-        "_all": "127.0.0.1:9000",  # AgiBot-World GO-1 server URL (override with GO1_SERVER env)
-    },
 }
 
 
 # Model action horizons: how many actions returned per inference call
 _MODEL_ACTION_HORIZONS = {
-    "openpi_pi0": 10,
     "openpi_pi05": 10,
     "openvla": 1,
     "ecot": 1,
-    "lightvla": 1,
     "deepthinkvla": 10,
     "molmoact": 1,
     "internvla_m1": 8,
-    "xvla": 30,
-    "openvla_oft": 8,
-    "smolvla": 1,
-    "groot": 16,
-    "inspirevla": 1,
-    "minivla": 1,
-    "go1": 5,
 }
 
 # Aliases for victim/model names (e.g. open_pi0.5 -> openpi_pi05)
 _MODEL_ID_ALIASES = {
-    "open_pi0": "openpi_pi0",
     "open_pi0.5": "openpi_pi05",
     "openpi_pi0.5": "openpi_pi05",
 }
@@ -129,41 +88,18 @@ def get_action_horizon(model_id: str) -> int:
 
 
 _SUBPROCESS_MODELS = {
-    "openvla", "lightvla", "ecot", "deepthinkvla", "deepthinkvla_eval",
-    "molmoact", "internvla_m1", "xvla", "openvla_oft", "smolvla", "groot",
-    "inspirevla", "minivla",
-}
-
-_ABSOLUTE_ACTION_MODELS = {"xvla"}
-
-# Models that must use predict_from_obs() instead of shared preprocess_image+predict().
-# Each has model-specific preprocessing (image size, JPEG round-trip, etc.) that the
-# shared 224x224 preprocess_image() pipeline would break.
-_OBS_PREDICT_MODELS = {
-    "xvla",       # absolute EE actions, needs raw obs for controller state
-    "smolvla",    # trained at 256x256 (not 224x224)
-    "openvla_oft", # needs JPEG round-trip to match RLDS training pipeline
-    "groot",      # trained at 256x256, needs raw obs for EEF decomposition
-    "go1",        # AgiBot client: send 256x256 images to match their eval
-    "inspirevla", # openvla-mini uses flipud, not 180° rotation
-    "minivla",    # openvla-mini uses flipud, not 180° rotation
+    "openvla", "ecot", "deepthinkvla", "deepthinkvla_eval",
+    "molmoact", "internvla_m1",
 }
 
 
 _MODEL_ENV_MAP = {
     "openvla": "vla_models",
-    "lightvla": "vla_models",
     "ecot": "vla_models",
     "deepthinkvla": "vla_deepthinkvla",
     "deepthinkvla_eval": "vla_deepthinkvla",
     "molmoact": "vla_molmoact",
     "internvla_m1": "vla_internvla",
-    "xvla": "vla_xvla",
-    "openvla_oft": "vla_models",
-    "smolvla": "vla_smolvla",
-    "groot": "vla_smolvla",
-    "inspirevla": "vla_inspirevla",
-    "minivla": "vla_inspirevla",
 }
 
 
@@ -214,7 +150,7 @@ def load_vla_model(
     Parameters
     ----------
     model_id : str
-        Model identifier (e.g. "openpi_pi05", "openvla", "lightvla").
+        Model identifier (e.g. "openpi_pi05", "openvla", "ecot").
     suite_name : str, optional
         LIBERO suite name for per-suite checkpoint selection.
     checkpoint_path : str, optional
@@ -240,15 +176,6 @@ def load_vla_model(
             replan_steps=replan_steps,
         )
 
-    if key == "openpi_pi0":
-        from pi0_libero_model import Pi0LiberoModel
-        return Pi0LiberoModel(
-            train_config_name="pi0_libero",
-            checkpoint_path=checkpoint_path,
-            action_horizon=action_horizon,
-            replan_steps=replan_steps,
-        )
-
     # --- Subprocess mode: run HF models in an isolated env ---
     # Skip if we are already inside a subprocess server (prevents infinite recursion).
     _in_subprocess = os.environ.get("_VLA_SUBPROCESS_SERVER") == "1"
@@ -256,7 +183,7 @@ def load_vla_model(
     if vla_python and key in _SUBPROCESS_MODELS:
         from subprocess_vla_wrapper import SubprocessVLAWrapper
         ckpt = checkpoint_path or get_checkpoint_for_suite(key, suite_name)
-        wrapper = SubprocessVLAWrapper(
+        return SubprocessVLAWrapper(
             python=vla_python,
             model_id=key,
             suite_name=suite_name,
@@ -265,11 +192,6 @@ def load_vla_model(
             action_horizon=action_horizon,
             replan_steps=replan_steps,
         )
-        if key in _ABSOLUTE_ACTION_MODELS:
-            wrapper.uses_absolute_actions = True
-        if key in _OBS_PREDICT_MODELS:
-            wrapper.use_obs_predict = True
-        return wrapper
 
     # --- Fallback: load in-process (same env) ---
     ckpt = checkpoint_path or get_checkpoint_for_suite(key, suite_name)
@@ -284,13 +206,6 @@ def load_vla_model(
     if key == "ecot":
         from ecot_wrapper import ECoTWrapper
         return ECoTWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
-    if key == "lightvla":
-        from lightvla_wrapper import LightVLAWrapper
-        return LightVLAWrapper(
             checkpoint=ckpt, suite_name=suite_name, device=device,
             action_horizon=action_horizon, replan_steps=replan_steps,
         )
@@ -316,68 +231,20 @@ def load_vla_model(
             action_horizon=action_horizon, replan_steps=replan_steps,
         )
 
-    if key == "xvla":
-        from xvla_wrapper import XVLAWrapper
-        return XVLAWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
-    if key == "openvla_oft":
-        from openvla_oft_wrapper import OpenVLAOFTWrapper
-        return OpenVLAOFTWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
-    if key == "smolvla":
-        from smolvla_wrapper import SmolVLAWrapper
-        return SmolVLAWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
-    if key == "groot":
-        from groot_wrapper import GR00TWrapper
-        return GR00TWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
-    if key in ("inspirevla", "minivla"):
-        from inspirevla_wrapper import InspireVLAWrapper
-        return InspireVLAWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
-    if key == "go1":
-        from go1_client_wrapper import GO1ClientWrapper
-        return GO1ClientWrapper(
-            checkpoint=ckpt, suite_name=suite_name, device=device,
-            action_horizon=action_horizon, replan_steps=replan_steps,
-        )
-
     raise ValueError(
-        f"Unknown model: {model_id}. Supported: openpi_pi0, openpi_pi05, "
-        "openvla, openvla_oft, ecot, lightvla, deepthinkvla, molmoact, internvla_m1, "
-        "xvla, smolvla, groot, inspirevla, minivla, go1"
+        f"Unknown model: {model_id}. Supported: openpi_pi05, "
+        "openvla, ecot, deepthinkvla, molmoact, internvla_m1"
     )
 
 
 def is_per_suite_model(model_id: str) -> bool:
     """True if the model uses per-suite checkpoints (must reload per suite)."""
     key = _normalize_model_id(model_id)
-    if key in ("openpi_pi0", "openpi_pi05"):
+    if key == "openpi_pi05":
         return False
     ckpts = _SUITE_CHECKPOINTS.get(key, {})
     return "_all" not in ckpts and len(ckpts) > 1
 
 
 def is_jax_model(model_id: str) -> bool:
-    return _normalize_model_id(model_id) in ("openpi_pi0", "openpi_pi05")
-
-
-def is_absolute_action_model(model_id: str) -> bool:
-    """True if the model outputs absolute EE targets (not deltas)."""
-    return _normalize_model_id(model_id) in _ABSOLUTE_ACTION_MODELS
+    return _normalize_model_id(model_id) == "openpi_pi05"

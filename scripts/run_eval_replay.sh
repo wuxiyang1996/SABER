@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 # Unified replay evaluation: replay pre-recorded attack prompts on any victim VLA.
 #
-# Replaces all 24+ run_eval_<model>_from_<source>[_<attack>].sh scripts, plus
-# run_eval_replay_task_failure.sh, run_eval_xvla.sh, and run_eval_molmoact.sh.
-#
 # Uses eval_replay_attack.py which executes each VLA twice per episode:
 #   1. Baseline rollout (original instruction)
 #   2. Attack rollout (perturbed instruction)
@@ -11,11 +8,9 @@
 # Only 1 GPU needed (no attack agent inference).
 #
 # Usage:
-#   bash scripts/run_eval_replay.sh --victim xvla --record outputs/.../task_failure_openpi_pi05.json
-#   bash scripts/run_eval_replay.sh --victim groot --record outputs/.../task_failure_openpi_pi05.json --gpu 3
+#   bash scripts/run_eval_replay.sh --victim openvla --record outputs/.../task_failure_openpi_pi05.json
 #   bash scripts/run_eval_replay.sh --victim internvla_m1 --record outputs/.../constraint_violation_openpi_pi05.json
 #   bash scripts/run_eval_replay.sh --all-victims --record outputs/.../task_failure_openpi_pi05.json
-#   bash scripts/run_eval_replay.sh --victim minivla --record outputs/.../task_failure_openpi_pi05.json --workers 4
 #
 # Options:
 #   --victim MODEL       Target VLA model name
@@ -27,7 +22,6 @@
 #   --episodes N         Episodes per task (default: use all from record)
 #   --output-dir DIR     Output directory (default: outputs/eval_result)
 #   --seed N             Random seed (default: 42)
-#   --workers N          Number of parallel workers (minivla/inspirevla only)
 #   --no-aggregate       Skip aggregation step
 set -euo pipefail
 
@@ -95,21 +89,15 @@ export PYTHONUTF8=1
 # NOTE: Per-model conda environments are handled automatically by Python code.
 # model_factory.py launches non-JAX VLA models in subprocesses using
 # SubprocessVLAWrapper, which picks the correct conda env's Python binary
-# via _MODEL_ENV_MAP. See scripts/setup_vla_envs.sh for env creation.
+# via _MODEL_ENV_MAP. See installation/setup_vla_envs.sh for env creation.
 
 # ---- Model-specific defaults ----
 # Returns: default GPU, default replan_steps, default max_steps
 get_model_defaults() {
   local model=$1
   case "$model" in
-    smolvla)
-      echo "3 1 400" ;;
-    groot)
-      echo "3 8 720" ;;
     internvla_m1)
       echo "0 5 400" ;;
-    openvla_oft)
-      echo "3 5 400" ;;
     *)
       echo "0 5 400" ;;
   esac
@@ -118,13 +106,6 @@ get_model_defaults() {
 setup_model_env() {
   local model=$1
   case "$model" in
-    groot)
-      export HF_HOME=/workspace/.cache/huggingface
-      export HF_HUB_CACHE=/workspace/.cache/huggingface/hub
-      export TORCH_HOME=/workspace/.cache_torch
-      export HF_LEROBOT_HOME=/workspace/.cache/lerobot
-      mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$TORCH_HOME" "$HF_LEROBOT_HOME"
-      ;;
     internvla_m1)
       export TORCH_HOME=/workspace/.cache_torch
       mkdir -p "$TORCH_HOME"
@@ -235,7 +216,7 @@ print(f'Merged {len(merged)} episodes into {out}')
 mkdir -p "$OUTPUT_DIR"
 
 if [[ "$ALL_VICTIMS" == true ]]; then
-  VICTIM_LIST=(openvla lightvla deepthinkvla ecot molmoact internvla_m1 xvla smolvla groot openvla_oft openpi_pi0 openpi_pi05)
+  VICTIM_LIST=(openpi_pi05 openvla ecot deepthinkvla molmoact internvla_m1)
   for v in "${VICTIM_LIST[@]}"; do
     echo ""
     echo "############### ${v} ###############"

@@ -58,11 +58,6 @@ MODEL_DEFAULTS = {
         "preprocess": "standard",
         "action_horizon": 1,
     },
-    "lightvla": {
-        "replan_steps": 1,
-        "preprocess": "standard",
-        "action_horizon": 1,
-    },
 }
 
 
@@ -124,7 +119,7 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--model", type=str, default="openvla",
-                        help="VLA model id (openvla, deepthinkvla, ecot, lightvla, …).")
+                        help="VLA model id (openpi_pi05, openvla, ecot, deepthinkvla, molmoact, internvla_m1).")
     parser.add_argument("--gpu", type=str, default="0")
     parser.add_argument("--suites", type=str,
                         default="libero_spatial,libero_object,libero_goal,libero_10")

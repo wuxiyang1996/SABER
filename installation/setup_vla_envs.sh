@@ -27,11 +27,11 @@
 #   - LIBERO repo at /workspace/LIBERO (or $LIBERO_ROOT)
 #
 # Usage:
-#   bash scripts/setup_vla_envs.sh                   # create all 4 envs
-#   bash scripts/setup_vla_envs.sh vla_models        # single env
-#   bash scripts/setup_vla_envs.sh vla_deepthinkvla  # single env
-#   bash scripts/setup_vla_envs.sh vla_molmoact      # single env
-#   bash scripts/setup_vla_envs.sh vla_internvla     # single env
+#   bash installation/setup_vla_envs.sh                   # create all 4 envs
+#   bash installation/setup_vla_envs.sh vla_models        # single env
+#   bash installation/setup_vla_envs.sh vla_deepthinkvla  # single env
+#   bash installation/setup_vla_envs.sh vla_molmoact      # single env
+#   bash installation/setup_vla_envs.sh vla_internvla     # single env
 # ============================================================================
 set -euo pipefail
 
@@ -409,7 +409,7 @@ case "$TARGET" in
         ;;
     *)
         echo "ERROR: Unknown target '${TARGET}'."
-        echo "Usage: bash scripts/setup_vla_envs.sh [vla_models|vla_deepthinkvla|vla_molmoact|vla_internvla|all]"
+        echo "Usage: bash installation/setup_vla_envs.sh [vla_models|vla_deepthinkvla|vla_molmoact|vla_internvla|all]"
         exit 1
         ;;
 esac

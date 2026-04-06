@@ -140,14 +140,12 @@ agent_attack_framework/
 │   └── objective.md           # Reward objective documentation
 ├── libero_rollouts/
 │   ├── model_factory.py       # Unified VLA loader (per-model env routing)
-│   ├── pi05_libero_model.py   # Pi0.5 VLA wrapper (JAX)
-│   ├── pi0_libero_model.py    # Pi0 VLA wrapper (JAX)
+│   ├── pi05_libero_model.py   # Pi0.5 VLA wrapper (JAX, OpenPI)
 │   ├── openvla_wrapper.py     # OpenVLA wrapper (HF transformers)
-│   ├── lightvla_wrapper.py    # LightVLA wrapper (HF transformers)
 │   ├── ecot_wrapper.py        # ECoT wrapper (OpenVLA + CoT)
-│   ├── deepthinkvla_rollout_wrapper.py  # DeepThinkVLA wrapper (4-bit, fast)
+│   ├── deepthinkvla_wrapper.py  # DeepThinkVLA wrapper (PaliGemma, 4-bit)
 │   ├── molmoact_wrapper.py    # MolmoAct wrapper (Molmo + action parsing)
-│   ├── internvla_wrapper.py   # InternVLA-M1 wrapper (custom architecture)
+│   ├── internvla_wrapper.py   # InternVLA-M1 wrapper (Qwen2.5VL + DINOv2)
 │   ├── subprocess_vla_wrapper.py  # Subprocess VLA client (env isolation)
 │   └── vla_subprocess_server.py   # Subprocess VLA server (runs in VLA env)
 ├── eval/
@@ -158,15 +156,19 @@ agent_attack_framework/
 ├── cold_start/
 │   ├── collect.py             # Cold-start trajectory collection (GPT-5 Mini)
 │   └── sft_train.py           # SFT training from cold-start data
-├── scripts/
+├── scripts/                   # Training and evaluation shell scripts
 │   ├── run_train.sh           # GRPO training (parameterised by objective)
 │   ├── run_record.sh          # Record attack prompts (parameterised by objective)
 │   ├── run_eval_attack.sh     # Live attack eval (parameterised by objective)
 │   ├── run_eval_replay.sh     # Replay pre-recorded attacks on any VLA
+│   ├── compute_libero_metrics_by_category.py  # Compute metrics by category
+│   └── kill_gpu_processes.sh  # Kill all GPU-using processes
+├── installation/              # Setup, patches, and environment scripts
+│   ├── install.sh             # One-command full install (conda + deps + patches)
+│   ├── init_runpod_env.sh     # RunPod-specific env initializer
 │   ├── setup_vla_envs.sh      # Create conda envs for all VLA model groups
-│   ├── check_libero_env.py    # Environment verification script
 │   ├── apply_vllm_patches.py  # Auto-apply ART ↔ vLLM 0.11.x patches
-│   └── dev/                   # Debug and demo scripts
+│   └── check_libero_env.py    # Environment verification script
 ├── repos/                     # External model repos (cloned here, not committed)
 │
 │ ── Core scripts ──
@@ -180,7 +182,6 @@ agent_attack_framework/
 ├── libero_utils.py            # Shared LIBERO env helpers and rollout functions
 ├── env_setup.py               # Shared GPU resolution and cache setup
 │
-├── install.sh                 # One-command full install (conda + deps + patches)
 ├── run_eval_baseline_all_vlas.sh  # Baseline eval (no attack, all VLAs)
 ├── requirements.txt
 ├── INSTALL.md
@@ -200,15 +201,15 @@ dependencies, sets up LIBERO, and applies the required ART/vLLM patches:
 git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
 
 # One-command install (creates conda env "vast" with Python 3.11)
-bash install.sh
+bash installation/install.sh
 ```
 
 Options:
 
 ```bash
-bash install.sh myenv            # custom env name
-bash install.sh vast --skip-conda  # skip conda create if env already exists
-LIBERO_ROOT=/path/to/LIBERO bash install.sh  # custom LIBERO location
+bash installation/install.sh myenv            # custom env name
+bash installation/install.sh vast --skip-conda  # skip conda create if env already exists
+LIBERO_ROOT=/path/to/LIBERO bash installation/install.sh  # custom LIBERO location
 ```
 
 After install, activate and run:
@@ -231,7 +232,7 @@ pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 --index-url https
 pip install "numpy>=2" "jax[cuda12]==0.5.3"
 pip install -r requirements.txt
 pip install -e ../LIBERO --no-deps
-python scripts/apply_vllm_patches.py
+python installation/apply_vllm_patches.py
 
 # (Optional) W&B for logging
 export WANDB_API_KEY=your_key
@@ -239,7 +240,7 @@ export WANDB_API_KEY=your_key
 
 ### Required patches (ART 0.5.x + vLLM 0.11.x)
 
-The installed ART (openpipe-art 0.5.9) targets vLLM ≥ 0.16 APIs that are missing in vLLM 0.11.x. Apply **both** patches below before running VLA training. Paths are relative to the venv site-packages (e.g. `/venv/vast/lib/python3.11/site-packages/`). A helper script applies both automatically: `python scripts/apply_vllm_patches.py`.
+The installed ART (openpipe-art 0.5.9) targets vLLM ≥ 0.16 APIs that are missing in vLLM 0.11.x. Apply **both** patches below before running VLA training. Paths are relative to the venv site-packages (e.g. `/venv/vast/lib/python3.11/site-packages/`). A helper script applies both automatically: `python installation/apply_vllm_patches.py`.
 
 **Patch 1 — `pause_generation` / `resume_generation` stubs:** ART's `UnslothService` calls `llm.pause_generation()` and `llm.resume_generation()`, which only exist in vLLM ≥ 0.16. Add these no-op stubs to `vllm/v1/engine/async_llm.py` in the `AsyncLLM` class (before the existing `sleep` method):
 
@@ -417,16 +418,14 @@ If the vLLM EngineCore process dies during the training phase (e.g. OOM when Uns
 
 ## Cross-Model Attack Transfer Evaluation
 
-The framework supports evaluating attack transferability across **8 victim VLA models**. Attacks are first recorded from a source model (e.g. Pi0.5), then **replayed** on other VLAs to measure how well the perturbed instructions transfer.
+The framework supports evaluating attack transferability across **6 victim VLA models**. Attacks are first recorded from a source model (e.g. Pi0.5), then **replayed** on other VLAs to measure how well the perturbed instructions transfer.
 
 ### Supported VLA models
 
 | Model | Env | Architecture | Action horizon |
 |-------|-----|-------------|---------------|
-| **Pi0** (`openpi_pi0`) | `runpod` (JAX, in-process) | OpenPI flow-matching | 10 |
 | **Pi0.5** (`openpi_pi05`) | `runpod` (JAX, in-process) | OpenPI flow-matching | 10 |
 | **OpenVLA** (`openvla`) | `vla_models` (subprocess) | OpenVLA-7B per-suite | 1 |
-| **LightVLA** (`lightvla`) | `vla_models` (subprocess) | LightVLA per-suite | 1 |
 | **ECoT** (`ecot`) | `vla_models` (subprocess) | OpenVLA + Chain-of-Thought | 1 |
 | **DeepThinkVLA** (`deepthinkvla`) | `vla_models` (subprocess) | OpenVLA + CoT + RL, 4-bit | 10 |
 | **MolmoAct** (`molmoact`) | `vla_molmoact` (subprocess) | Molmo + action parsing | 1 |
@@ -438,12 +437,12 @@ Different VLA models require different `transformers` versions, so they run in s
 
 ```bash
 # Create all VLA environments (one-time)
-bash scripts/setup_vla_envs.sh
+bash installation/setup_vla_envs.sh
 
 # Or create individual envs
-bash scripts/setup_vla_envs.sh vla_models    # OpenVLA, LightVLA, ECoT, DeepThinkVLA
-bash scripts/setup_vla_envs.sh vla_molmoact  # MolmoAct (transformers >= 4.48)
-bash scripts/setup_vla_envs.sh vla_internvla # InternVLA-M1 (transformers 4.52)
+bash installation/setup_vla_envs.sh vla_models    # OpenVLA, ECoT, DeepThinkVLA
+bash installation/setup_vla_envs.sh vla_molmoact  # MolmoAct (transformers >= 4.48)
+bash installation/setup_vla_envs.sh vla_internvla # InternVLA-M1 (transformers 4.52)
 ```
 
 The `model_factory.py` automatically routes each model to its correct environment. No manual `VLA_PYTHON` setting is needed.
@@ -453,12 +452,10 @@ The `model_factory.py` automatically routes each model to its correct environmen
 Record the attack agent's perturbed instructions from source models:
 
 ```bash
-bash scripts/run_record.sh task_failure openpi_pi0
 bash scripts/run_record.sh task_failure openpi_pi05
 ```
 
 This produces JSON files with `original_instruction` and `perturbed_instruction` for each (suite, task, episode):
-- `outputs/agent_output_records_task_failure_2/task_failure_openpi_pi0.json`
 - `outputs/agent_output_records_task_failure_2/task_failure_openpi_pi05.json`
 
 ### Step 2: Replay attacks on other VLAs
@@ -498,12 +495,11 @@ This produces a cross-model comparison table showing ASR (attack success rate) a
 
 ```
 outputs/replay_eval_task_failure/
-├── replay_task_failure_openvla_from_openpi_pi0.json
 ├── replay_task_failure_openvla_from_openpi_pi05.json
-├── replay_task_failure_lightvla_from_openpi_pi0.json
+├── replay_task_failure_ecot_from_openpi_pi05.json
 ├── ...
-├── openvla_from_openpi_pi0.log
 ├── openvla_from_openpi_pi05.log
+├── ecot_from_openpi_pi05.log
 ├── ...
 ├── cross_model_summary.json          # Aggregated cross-model comparison
 └── aggregation.log

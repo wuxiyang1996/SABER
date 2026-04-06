@@ -2,8 +2,8 @@
 """
 Check that the libero conda env has pi0.5 and agentic attack dependencies for LIBERO.
 
-Run from agent_attack_framework/ with:  python scripts/check_libero_env.py
-Or with conda:  conda run -n libero python agent_attack_framework/scripts/check_libero_env.py
+Run from agent_attack_framework/ with:  python installation/check_libero_env.py
+Or with conda:  conda run -n libero python agent_attack_framework/installation/check_libero_env.py
 """
 from __future__ import annotations
 

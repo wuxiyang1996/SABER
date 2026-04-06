@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Kill all processes currently using GPU compute. Run from the same environment
 # where training was started (e.g. your SLURM job or terminal).
-# Usage: ./scripts/kill_gpu_processes.sh   or   bash scripts/kill_gpu_processes.sh
+# Usage: bash scripts/kill_gpu_processes.sh
 
 set -e
 PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | sort -u)

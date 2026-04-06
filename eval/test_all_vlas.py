@@ -24,17 +24,14 @@ if _FRAMEWORK_ROOT not in sys.path:
     sys.path.insert(0, _FRAMEWORK_ROOT)
 
 
-# All 10 models we claim to support
-NATIVE_IDS = ("openpi_pi0", "openpi_pi05")
+# All 6 paper models
+NATIVE_IDS = ("openpi_pi05",)
 EXTERNAL_IDS = (
     "openvla",
-    "xvla",
     "molmoact",
     "deepthinkvla",
     "ecot",
     "internvla_m1",
-    "starvla",
-    "lightvla",
 )
 ALL_MODEL_IDS = NATIVE_IDS + EXTERNAL_IDS
 
@@ -68,10 +65,6 @@ def test_external_commands_contain_expected():
     openvla_cmds = get_commands("openvla", repo_path=repo)
     assert len(openvla_cmds) == 4
     assert all("libero_" in c for c in openvla_cmds)
-    # X-VLA: 4 commands
-    xvla_cmds = get_commands("xvla", repo_path=repo)
-    assert len(xvla_cmds) == 4
-    assert all("lerobot-eval" in c and "libero" in c for c in xvla_cmds)
 
 
 def test_native_registry():

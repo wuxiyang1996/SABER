@@ -6,17 +6,16 @@ victim VLA model on LIBERO. The attack agent was trained on π0.5 and its
 prompt-level perturbations are tested for transferability to other VLAs.
 
 Supported victim VLAs:
-    openpi_pi0, openpi_pi05, openvla, ecot, lightvla,
-    deepthinkvla, molmoact, internvla_m1
+    openpi_pi05, openvla, ecot, deepthinkvla, molmoact, internvla_m1
 
 Usage:
     # Evaluate against a single VLA (e.g. OpenVLA)
     python eval_attack_vla.py --victim openvla --vla_gpu 0 --attack_gpus 2,3
 
-    # Evaluate against Pi0 (native JAX)
-    python eval_attack_vla.py --victim openpi_pi0 --vla_gpu 0 --attack_gpus 2,3
+    # Evaluate against Pi0.5 (native JAX)
+    python eval_attack_vla.py --victim openpi_pi05 --vla_gpu 0 --attack_gpus 2,3
 
-    # Evaluate against all 8 VLAs (use run_eval_attack_all_vlas.sh)
+    # Evaluate against all 6 VLAs (use run_eval_attack_all_vlas.sh)
 """
 
 from __future__ import annotations
@@ -45,7 +44,7 @@ _pre_args, _ = _pre_parser.parse_known_args()
 # JAX model placement is controlled via jax.default_device().
 # XLA_PYTHON_CLIENT_PREALLOCATE=false ensures JAX only allocates memory on
 # the device it actually uses (the VLA GPU).
-_IS_JAX_VICTIM = _pre_args.victim.lower().replace("-", "_") in ("openpi_pi0", "openpi_pi05")
+_IS_JAX_VICTIM = _pre_args.victim.lower().replace("-", "_") == "openpi_pi05"
 _VLA_GPU = str(_pre_args.vla_gpu)
 _ATTACK_GPUS_PHYSICAL = _pre_args.attack_gpus
 _ALL_GPU_SORTED = sorted(set(
@@ -1049,8 +1048,8 @@ def main():
     # Victim VLA
     parser.add_argument(
         "--victim", type=str, required=True,
-        help="Victim VLA model: openpi_pi0, openpi_pi05, openvla, ecot, "
-             "lightvla, deepthinkvla, molmoact, internvla_m1",
+        help="Victim VLA model: openpi_pi05, openvla, ecot, "
+             "deepthinkvla, molmoact, internvla_m1",
     )
     parser.add_argument("--vla_gpu", type=str, default="0",
                         help="GPU index for the victim VLA model.")

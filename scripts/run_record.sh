@@ -11,7 +11,7 @@
 # Usage:
 #   bash scripts/run_record.sh task_failure                         # all models
 #   bash scripts/run_record.sh action_inflation openvla             # single model
-#   bash scripts/run_record.sh constraint_violation openvla lightvla
+#   bash scripts/run_record.sh constraint_violation openvla ecot
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -106,7 +106,7 @@ trap restore_checkpoints EXIT
 if [[ $# -gt 0 ]]; then
   MODELS=("$@")
 else
-  MODELS=(openpi_pi0 openpi_pi05 openvla lightvla deepthinkvla ecot molmoact internvla_m1)
+  MODELS=(openpi_pi05 openvla deepthinkvla ecot molmoact internvla_m1)
 fi
 
 run_one() {

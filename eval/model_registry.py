@@ -1,10 +1,9 @@
 """
 Model registry for LIBERO evaluation.
 
-Supports OpenPI pi0 and pi0.5 natively. Other models (DeepThinkVLA, MolmoAct,
-ECoT, InternVLA-M1, OpenVLA, StarVLA, X-VLA, LightVLA) are documented in
-eval/README.md with their repo eval commands; this registry only loads
-openpi_pi0 and openpi_pi05 for run_libero_eval.py.
+Supports OpenPI pi0.5 natively. Other paper models (DeepThinkVLA, MolmoAct,
+ECoT, InternVLA-M1, OpenVLA) are loaded via model_factory.py / subprocess;
+this registry loads openpi_pi05 for run_libero_eval.py.
 """
 
 from __future__ import annotations
@@ -18,16 +17,12 @@ import numpy as np
 # replan_steps: steps executed from each action chunk before re-planning (we use 5 for OpenPI).
 # External models: episodes_per_task/seed match eval/external/configs; action_* only used if we add native wrappers.
 MODEL_DEFAULT_HYPERPARAMS: Dict[str, Dict[str, Any]] = {
-    "openpi_pi0": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
     "openpi_pi05": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
     "openvla": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
-    "xvla": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
-    "molmoact": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
-    "deepthinkvla": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
     "ecot": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
+    "deepthinkvla": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
+    "molmoact": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
     "internvla_m1": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
-    "starvla": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
-    "lightvla": {"action_horizon": 10, "replan_steps": 5, "episodes_per_task": 5, "seed": 42},
 }
 
 
@@ -58,7 +53,7 @@ MAX_STEPS = {
 }
 
 # Models that run_libero_eval.py can load directly
-NATIVE_MODELS = ("openpi_pi0", "openpi_pi05")
+NATIVE_MODELS = ("openpi_pi05",)
 
 
 def load_model(
@@ -73,14 +68,6 @@ def load_model(
         action_horizon = defaults["action_horizon"]
     if replan_steps is None:
         replan_steps = defaults["replan_steps"]
-    if model_name == "openpi_pi0":
-        from libero_rollouts.pi0_libero_model import Pi0LiberoModel
-        return Pi0LiberoModel(
-            train_config_name="pi0_libero",
-            checkpoint_path=checkpoint_path,
-            action_horizon=action_horizon,
-            replan_steps=replan_steps,
-        )
     if model_name == "openpi_pi05":
         from libero_rollouts.pi05_libero_model import Pi05LiberoModel
         return Pi05LiberoModel(
@@ -91,7 +78,7 @@ def load_model(
         )
     raise ValueError(
         f"Unknown model '{model_name}'. Supported: {list(NATIVE_MODELS)}. "
-        "For other models (DeepThinkVLA, MolmoAct, etc.) see eval/README.md."
+        "For other models (OpenVLA, ECoT, etc.) use model_factory.load_vla_model()."
     )
 
 

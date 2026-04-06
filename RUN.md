@@ -75,7 +75,7 @@ So: **max_turns** = “how many tool-call rounds”; **max_edit_chars** = “tot
 1. **Environment**: Use the env from `requirements.txt` (e.g. conda `vast` or `libero`, Python 3.11, PyTorch + JAX, LIBERO, openpi, openpipe-art). To verify:
    ```bash
    conda activate vast   # or libero
-   python scripts/check_libero_env.py
+   python installation/check_libero_env.py
    ```
    This checks: Python 3.11, RoboTwin root and policy/pi05, jax, flax, openpi, libero, openpipe-art, vllm, langgraph, and Pi05LiberoModel. If `vllm` is not 0.13.0, you may see a warning; upgrade with `pip install vllm==0.13.0` if needed.
 2. **LIBERO**: Installed and on `PYTHONPATH` (e.g. `pip install -e /path/to/LIBERO --no-deps`).
