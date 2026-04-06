@@ -74,7 +74,7 @@ import time
 import threading
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import numpy as np
 
@@ -83,109 +83,11 @@ if _SCRIPT_DIR not in sys.path:
 
 logger = logging.getLogger("eval_replay_attack")
 
-LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
-
-_MAX_STEPS = {
-    "libero_spatial": 220,
-    "libero_object": 280,
-    "libero_goal": 300,
-    "libero_10": 520,
-}
-
-
-def _create_libero_env(task_suite_name, task_id, seed, resolution=256):
-    from libero.libero import benchmark, get_libero_path
-    from libero.libero.envs import OffScreenRenderEnv
-    import pathlib
-
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[task_suite_name]()
-    task = task_suite.get_task(task_id)
-    initial_states = task_suite.get_task_init_states(task_id)
-    task_bddl_file = str(
-        pathlib.Path(get_libero_path("bddl_files"))
-        / task.problem_folder
-        / task.bddl_file
-    )
-    env = OffScreenRenderEnv(
-        bddl_file_name=task_bddl_file,
-        camera_heights=resolution,
-        camera_widths=resolution,
-    )
-    env.seed(seed)
-    return env, initial_states, task.language
-
-
-def _reset_env(env, initial_states, episode_idx=0):
-    env.reset()
-    init_state = initial_states[episode_idx % len(initial_states)]
-    obs = env.set_init_state(init_state)
-    for _ in range(10):
-        obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION)
-    return obs
-
-
-def make_generic_policy_fn(vla_model, instruction, replan_steps=5, is_jax=False,
-                           vla_lock=None, base_env=None):
-    action_buffer = []
-    current_instruction = instruction
-    lock = vla_lock or threading.Lock()
-    _use_obs = getattr(vla_model, 'use_obs_predict', False)
-
-    from libero_rollouts.pi05_libero_model import preprocess_image, build_libero_state
-
-    def policy_fn(obs, instr):
-        nonlocal action_buffer, current_instruction
-        if instr != current_instruction:
-            current_instruction = instr
-        if not action_buffer:
-            with lock:
-                vla_model.set_language(current_instruction)
-                if _use_obs:
-                    enriched = dict(obs)
-                    if base_env is not None and hasattr(base_env, 'robots'):
-                        ctrl = base_env.robots[0].controller
-                        enriched['_ctrl_ee_pos'] = ctrl.ee_pos.copy()
-                        enriched['_ctrl_ee_ori_mat'] = ctrl.ee_ori_mat.copy()
-                    actions = vla_model.predict_from_obs(enriched)
-                else:
-                    agentview = preprocess_image(obs["agentview_image"])
-                    wrist = preprocess_image(obs["robot0_eye_in_hand_image"])
-                    state = build_libero_state(obs)
-                    actions = vla_model.predict(agentview, wrist, state)
-            action_buffer.extend(actions[:replan_steps].tolist())
-        action = np.array(action_buffer.pop(0), dtype=np.float64)
-        return action, ""
-
-    return policy_fn
-
-
-def run_vla_episode(env, initial_states, vla_model, instruction, episode_idx,
-                    max_steps, replan_steps, is_jax=False, vla_lock=None,
-                    fast=False):
-    from rwd_func.rwd import collect_libero_rollout_info
-
-    obs = _reset_env(env, initial_states, episode_idx)
-
-    base_env = env.env if hasattr(env, "env") else env
-    if getattr(vla_model, 'uses_absolute_actions', False):
-        for robot in base_env.robots:
-            robot.controller.use_delta = False
-
-    policy_fn = make_generic_policy_fn(
-        vla_model, instruction, replan_steps=replan_steps,
-        is_jax=is_jax, vla_lock=vla_lock, base_env=base_env,
-    )
-    return collect_libero_rollout_info(
-        env=base_env,
-        policy_fn=policy_fn,
-        instruction=instruction,
-        observation=obs,
-        max_steps=max_steps,
-        collect_predicates=not fast,
-        scene_snapshot_interval=0 if fast else 25,
-        store_observations=not fast,
-    )
+from libero_utils import (
+    MAX_STEPS as _MAX_STEPS,
+    create_libero_env as _create_libero_env,
+    run_vla_episode,
+)
 
 
 def load_attack_record(path: str) -> Dict[str, Any]:

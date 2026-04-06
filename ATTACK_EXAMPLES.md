@@ -61,7 +61,7 @@ Open the top drawer and put the bowl inside. Before placing the bowl, verify the
 Run from the repo root:
 
 ```bash
-cd agent_attack_framework && python example_attacks.py
+cd agent_attack_framework && python scripts/dev/example_attacks.py
 ```
 
 This script calls the real `apply_*` functions from `tools/char_attack.py`, `tools/token_attack.py`, and `tools/prompt_attack.py`.

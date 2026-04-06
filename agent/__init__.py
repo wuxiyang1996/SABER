@@ -1,12 +1,4 @@
-"""Agent package exports.
-
-This package supports two independent rollouts:
- - HotpotQA (text-only) in `agent.rollout` (optional; requires HotpotQA dataset code)
- - LIBERO / π0.5 VLA in `agent.vla_rollout`
-
-We intentionally do NOT import `agent.rollout` here, so running LIBERO/VLA does
-not require any HotpotQA-specific dependencies to be installed.
-"""
+"""Agent package — VLA adversarial attack rollout for LIBERO / Pi0.5."""
 
 from .vla_rollout import (
     ToolSet,

@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""Baseline LIBERO evaluation for DeepThinkVLA using model_factory.
+"""Unified baseline LIBERO evaluation for VLA models.
 
-Evaluates DeepThinkVLA (via DeepThinkVLAWrapper with proper predict_cot_action)
-on LIBERO suites without any attack. Records per-task and per-suite success
-rates and saves a JSON report.
+Evaluates a VLA model on LIBERO suites without any attack.  Records per-task
+and per-suite success rates and saves a JSON report.
+
+Model-specific behaviour (replan_steps default, image preprocessing) is
+handled via MODEL_DEFAULTS so adding a new model only requires one dict entry.
 
 Usage:
-    python eval_baseline_deepthinkvla.py --gpu 0 --suites libero_spatial,libero_object,libero_goal,libero_10
-    python eval_baseline_deepthinkvla.py --gpu 1 --task_ids 7-9  # held-out test tasks only
+    python eval_baseline_vla.py --model openvla   --gpu 1
+    python eval_baseline_vla.py --model deepthinkvla --gpu 0
+    python eval_baseline_vla.py --model openvla --task_ids 7-9 --suites libero_spatial
+    python eval_baseline_vla.py --model ecot --gpu 2 --suites libero_spatial,libero_object
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
-import pathlib
-import logging
 from datetime import datetime
-from collections import defaultdict
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
@@ -32,63 +34,59 @@ if _SCRIPT_DIR not in sys.path:
 
 import numpy as np
 
-logger = logging.getLogger("eval_baseline_deepthinkvla")
+from libero_utils import MAX_STEPS, parse_task_ids, create_libero_env, reset_env
 
-LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
+logger = logging.getLogger("eval_baseline_vla")
 
-MAX_STEPS = {
-    "libero_spatial": 220,
-    "libero_object": 280,
-    "libero_goal": 300,
-    "libero_10": 520,
+
+# ---------------------------------------------------------------------------
+# Model-specific defaults
+# ---------------------------------------------------------------------------
+
+MODEL_DEFAULTS = {
+    "openvla": {
+        "replan_steps": 1,
+        "preprocess": "openvla",
+        "action_horizon": 1,
+    },
+    "deepthinkvla": {
+        "replan_steps": 5,
+        "preprocess": "standard",
+    },
+    "ecot": {
+        "replan_steps": 1,
+        "preprocess": "standard",
+        "action_horizon": 1,
+    },
+    "lightvla": {
+        "replan_steps": 1,
+        "preprocess": "standard",
+        "action_horizon": 1,
+    },
 }
 
 
-def parse_task_ids(s):
-    ids = []
-    for part in s.replace(" ", "").split(","):
-        if "-" in part:
-            lo, hi = part.split("-", 1)
-            ids.extend(range(int(lo), int(hi) + 1))
-        else:
-            ids.append(int(part))
-    return sorted(set(ids))
+def _get_preprocess_fn(model_id: str):
+    """Return the image preprocessing function for the given model."""
+    preprocess_type = MODEL_DEFAULTS.get(model_id, {}).get("preprocess", "standard")
+    if preprocess_type == "openvla":
+        from libero_rollouts.openvla_wrapper import preprocess_image_openvla
+        return preprocess_image_openvla
+    from libero_rollouts.pi05_libero_model import preprocess_image
+    return preprocess_image
 
 
-def create_libero_env(task_suite_name, task_id, seed, resolution=256):
-    from libero.libero import benchmark, get_libero_path
-    from libero.libero.envs import OffScreenRenderEnv
-
-    benchmark_dict = benchmark.get_benchmark_dict()
-    task_suite = benchmark_dict[task_suite_name]()
-    task = task_suite.get_task(task_id)
-    initial_states = task_suite.get_task_init_states(task_id)
-    task_bddl_file = str(
-        pathlib.Path(get_libero_path("bddl_files"))
-        / task.problem_folder
-        / task.bddl_file
-    )
-    env = OffScreenRenderEnv(
-        bddl_file_name=task_bddl_file,
-        camera_heights=resolution,
-        camera_widths=resolution,
-    )
-    env.seed(seed)
-    return env, initial_states, task.language
+def _get_default_replan(model_id: str) -> int:
+    return MODEL_DEFAULTS.get(model_id, {}).get("replan_steps", 5)
 
 
-def reset_env(env, initial_states, episode_idx=0):
-    env.reset()
-    init_state = initial_states[episode_idx % len(initial_states)]
-    obs = env.set_init_state(init_state)
-    for _ in range(10):
-        obs, _, _, _ = env.step(LIBERO_DUMMY_ACTION)
-    return obs
-
+# ---------------------------------------------------------------------------
+# Episode runner
+# ---------------------------------------------------------------------------
 
 def run_episode(env, initial_states, vla_model, instruction, episode_idx,
-                max_steps, replan_steps):
-    from libero_rollouts.pi05_libero_model import preprocess_image, build_libero_state
+                max_steps, replan_steps, preprocess_fn):
+    from libero_rollouts.pi05_libero_model import build_libero_state
 
     obs = reset_env(env, initial_states, episode_idx)
     action_buffer = []
@@ -99,8 +97,8 @@ def run_episode(env, initial_states, vla_model, instruction, episode_idx,
 
     for step in range(max_steps):
         if not action_buffer:
-            agentview = preprocess_image(obs["agentview_image"])
-            wrist = preprocess_image(obs["robot0_eye_in_hand_image"])
+            agentview = preprocess_fn(obs["agentview_image"])
+            wrist = preprocess_fn(obs["robot0_eye_in_hand_image"])
             state = build_libero_state(obs)
             actions = vla_model.predict(agentview, wrist, state)
             action_buffer.extend(actions[:replan_steps].tolist())
@@ -116,20 +114,31 @@ def run_episode(env, initial_states, vla_model, instruction, episode_idx,
     return success, total_steps
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Baseline LIBERO evaluation for DeepThinkVLA.",
+        description="Baseline LIBERO evaluation for VLA models.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--model", type=str, default="openvla",
+                        help="VLA model id (openvla, deepthinkvla, ecot, lightvla, …).")
     parser.add_argument("--gpu", type=str, default="0")
     parser.add_argument("--suites", type=str,
                         default="libero_spatial,libero_object,libero_goal,libero_10")
     parser.add_argument("--task_ids", type=str, default="7-9")
     parser.add_argument("--episodes_per_task", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--replan_steps", type=int, default=5)
+    parser.add_argument("--replan_steps", type=int, default=None,
+                        help="Override replan_steps (auto-detected per model if omitted).")
     parser.add_argument("--output_dir", type=str, default="outputs/baseline_eval")
     args = parser.parse_args()
+
+    model_id = args.model.lower().replace("-", "_")
+    replan_steps = args.replan_steps if args.replan_steps is not None else _get_default_replan(model_id)
+    preprocess_fn = _get_preprocess_fn(model_id)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
 
@@ -142,17 +151,18 @@ def main():
     task_ids = parse_task_ids(args.task_ids)
 
     logger.info("=" * 60)
-    logger.info("DeepThinkVLA Baseline Evaluation")
+    logger.info("%s Baseline Evaluation", model_id)
     logger.info("=" * 60)
+    logger.info("  Model:          %s", model_id)
     logger.info("  Suites:         %s", suite_names)
     logger.info("  Task IDs:       %s", task_ids)
     logger.info("  Episodes/task:  %d", args.episodes_per_task)
     logger.info("  Seed:           %d", args.seed)
+    logger.info("  Replan steps:   %d", replan_steps)
     logger.info("  GPU:            %s", args.gpu)
 
-    from libero_rollouts.model_factory import load_vla_model
+    from libero_rollouts.model_factory import load_vla_model, get_checkpoint_for_suite
 
-    results = {}
     all_successes = []
     per_suite = {}
     t0 = time.time()
@@ -161,11 +171,17 @@ def main():
         logger.info("\n--- Suite: %s ---", suite_name)
         max_steps = MAX_STEPS.get(suite_name, 300)
 
+        try:
+            ckpt = get_checkpoint_for_suite(model_id, suite_name)
+            logger.info("  Checkpoint: %s", ckpt)
+        except ValueError:
+            ckpt = None
+
         vla_model = load_vla_model(
-            "deepthinkvla",
+            model_id,
             suite_name=suite_name,
             device="cuda:0",
-            replan_steps=args.replan_steps,
+            replan_steps=replan_steps,
         )
 
         suite_successes = []
@@ -181,7 +197,7 @@ def main():
             for ep in range(args.episodes_per_task):
                 success, steps = run_episode(
                     env, initial_states, vla_model, instruction,
-                    ep, max_steps, args.replan_steps,
+                    ep, max_steps, replan_steps, preprocess_fn,
                 )
                 ep_results.append({"success": success, "steps": steps})
                 logger.info("    Episode %d: success=%s, steps=%d",
@@ -233,15 +249,23 @@ def main():
                  overall_sr * 100, sum(all_successes), len(all_successes))
     logger.info("  Time: %.1fs", elapsed)
 
+    # Build checkpoint info for the report
+    checkpoints = {}
+    for sn in suite_names:
+        try:
+            checkpoints[sn] = get_checkpoint_for_suite(model_id, sn)
+        except ValueError:
+            pass
+
     report = {
-        "model": "deepthinkvla",
-        "checkpoint": "yinchenghust/deepthinkvla_libero_cot_rl",
+        "model": model_id,
+        "checkpoints": checkpoints,
         "config": {
             "suites": suite_names,
             "task_ids": task_ids,
             "episodes_per_task": args.episodes_per_task,
             "seed": args.seed,
-            "replan_steps": args.replan_steps,
+            "replan_steps": replan_steps,
             "gpu": args.gpu,
         },
         "overall_success_rate": overall_sr,
@@ -254,7 +278,7 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_path = os.path.join(args.output_dir, f"baseline_deepthinkvla_{ts}.json")
+    report_path = os.path.join(args.output_dir, f"baseline_{model_id}_{ts}.json")
     with open(report_path, "w") as f:
         json.dump(report, f, indent=2)
     logger.info("Report saved to %s", report_path)

@@ -50,3 +50,5 @@ outputs/
 openpi/
 # Eval result JSONs
 eval/results/
+# One-off debug outputs
+baseline_reliable_tasks.json

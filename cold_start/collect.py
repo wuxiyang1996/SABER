@@ -41,7 +41,7 @@ import time
 import uuid
 import warnings
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="flax.core.scope")
 warnings.filterwarnings("ignore", category=DeprecationWarning, module="jax.extend.linear_util")
@@ -50,29 +50,14 @@ warnings.filterwarnings("ignore", category=DeprecationWarning, module="jax.exten
 # GPU layout — resolve before CUDA / JAX imports (same pattern as train_vla)
 # ---------------------------------------------------------------------------
 
-def _early_resolve_vla_gpus() -> list[int]:
-    raw = None
-    for i, tok in enumerate(sys.argv):
-        if tok in ("--vla_gpu", "--vla_gpus") and i + 1 < len(sys.argv):
-            raw = sys.argv[i + 1]
-            break
-        if tok.startswith("--vla_gpu=") or tok.startswith("--vla_gpus="):
-            raw = tok.split("=", 1)[1]
-            break
-    if raw is None:
-        raw = os.environ.get("VLA_GPUS", os.environ.get("VLA_GPU", "0,1,2"))
-    return [int(g.strip()) for g in raw.split(",")]
+sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), "..")))
+from env_setup import early_resolve_vla_gpus, logical_to_physical, setup_cache_dirs
 
-_VLA_GPUS = _early_resolve_vla_gpus()
+_VLA_GPUS = early_resolve_vla_gpus()
 _orig_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 _orig_gpu_list = [g.strip() for g in _orig_visible.split(",") if g.strip()]
 
-def _logical_to_physical(idx: int) -> str:
-    if _orig_gpu_list and idx < len(_orig_gpu_list):
-        return _orig_gpu_list[idx]
-    return str(idx)
-
-_VLA_GPUS_PHYSICAL = ",".join(_logical_to_physical(i) for i in sorted(_VLA_GPUS))
+_VLA_GPUS_PHYSICAL = ",".join(logical_to_physical(i, _orig_gpu_list) for i in sorted(_VLA_GPUS))
 os.environ["CUDA_VISIBLE_DEVICES"] = _VLA_GPUS_PHYSICAL
 os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.45")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -80,21 +65,9 @@ os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 # Cache directories
-_CACHE_ROOT = os.path.realpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", ".cache",
-))
-os.environ.setdefault("OPENPI_DATA_HOME", _CACHE_ROOT)
-os.environ.setdefault("HF_HOME", os.path.join(_CACHE_ROOT, "huggingface"))
-os.environ.setdefault("HF_HUB_CACHE", os.path.join(_CACHE_ROOT, "huggingface", "hub"))
-os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(_CACHE_ROOT, "huggingface"))
-os.environ.setdefault("TORCH_HOME", os.path.join(_CACHE_ROOT, "torch"))
-try:
-    os.makedirs(_CACHE_ROOT, exist_ok=True)
-except OSError:
-    pass
+setup_cache_dirs()
 
-# Ensure project root is importable
-sys.path.insert(0, os.path.realpath(os.path.join(os.path.dirname(__file__), "..")))
+# Ensure project root is importable (already on sys.path from env_setup import above)
 
 from dotenv import load_dotenv
 

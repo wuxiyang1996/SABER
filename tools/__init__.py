@@ -1,5 +1,3 @@
-from .attack import TOOL_SCHEMAS, apply_suffix
-
 # --- Token-level tools (word-level perturbations) ---
 from .token_attack import (
     # Phase 1: FIND — prompt agent to identify targets

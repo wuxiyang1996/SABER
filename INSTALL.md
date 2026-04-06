@@ -1,6 +1,6 @@
 # Agent Attack Framework — Installation
 
-This guide sets up the conda environment and dependencies for the **VLA attack** (Pi0.5 in LIBERO). For text-only (HotpotQA) mode, you can skip RoboTwin and LIBERO.
+This guide sets up the conda environment and dependencies for **SABER** — adversarial VLA attacks on Pi0.5 in LIBERO.
 
 > **Quick install:** If you prefer a single command that does everything below, run `bash install.sh` (see [Quick install](#quick-install)).
 
@@ -105,7 +105,7 @@ The **openpi** library (used in `libero_rollouts/pi05_libero_model.py`) can be s
 - **Option B — RoboTwin:** Otherwise the wrapper looks for **RoboTwin** at `<workspace>/RoboTwin` (sibling of `agent_attack_framework/`) with `policy/pi05` and the openpi code. To use a different path:
   ```bash
   export ROBOTWIN_ROOT=/path/to/RoboTwin
-  python run.py vla ...
+  python train_vla.py ...
   ```
 
 So if openpi is already under `agent_attack_framework/openpi/`, you do not need to clone RoboTwin or set `ROBOTWIN_ROOT`.
@@ -241,20 +241,59 @@ Fix any reported `[FAIL]` items before running VLA experiments.
 
 ---
 
-## 8. Run a quick VLA test
+## 8. VLA model environments (per-model conda envs)
+
+Different VLA victim models require incompatible `transformers` versions (and other deps), so each model group gets its own conda environment. The main `runpod`/`vast` env handles training, the attack agent (vLLM + LangGraph), and JAX models (Pi0, Pi0.5).
+
+### How it works
+
+`model_factory.py` uses **subprocess isolation**: when loading a non-JAX VLA model, it spawns a subprocess using the correct env's Python binary (via `SubprocessVLAWrapper`). The shell scripts only need to activate the `runpod` env — model-specific env switching is automatic.
+
+### Environment mapping (paper models)
+
+| Conda env | Models | Key deps |
+|---|---|---|
+| `runpod` / `vast` | **Pi0.5** (JAX, source VLA), attack agent, training | JAX, vLLM, ART, LangGraph |
+| `vla_models` | **OpenVLA**, **ECoT** | transformers 4.41.x |
+| `vla_deepthinkvla` | **DeepThinkVLA** | transformers 4.41.x + DeepThinkVLA repo |
+| `vla_molmoact` | **MolmoAct** | transformers >= 4.51 |
+| `vla_internvla` | **InternVLA-M1** | transformers 4.52.x |
+
+### Setup
+
+Create all VLA envs at once:
 
 ```bash
-conda activate vast
+bash scripts/setup_vla_envs.sh              # all 4 envs
+bash scripts/setup_vla_envs.sh vla_models   # single env
+```
+
+### Override
+
+To force a specific Python binary for VLA subprocess mode:
+
+```bash
+export VLA_PYTHON=/path/to/conda/envs/my_env/bin/python
+```
+
+---
+
+## 9. Run a quick VLA test
+
+```bash
+conda activate runpod   # or vast
 cd agent_attack_framework
 export ROBOTWIN_ROOT=/path/to/RoboTwin   # if not using default layout
-python run.py vla --objective task_failure --task_suite libero_spatial --task_ids 0,1,2
+python train_vla.py --objective task_failure --task_suite libero_spatial --task_ids 0,1,2
 ```
 
 See **RUN.md** for more options and troubleshooting.
 
 ---
 
-## 9. Common issues
+## 10. Common issues
+
+> **Note:** Section references in the table below (§5.3, §5.4, §6) refer to earlier sections of this document.
 
 | Symptom | Cause | Fix |
 |--------|--------|-----|
@@ -274,9 +313,9 @@ See **RUN.md** for more options and troubleshooting.
 
 ---
 
-## 10. Summary checklist
+## 11. Summary checklist
 
-- [ ] Conda env created (Python 3.11) and activated
+- [ ] Main conda env created (Python 3.11) and activated
 - [ ] Conda packages: gcc_linux-64, gxx_linux-64, libopengl, mesalib
 - [ ] PyTorch (cu128) and JAX (cuda12) installed
 - [ ] `pip install -r requirements.txt` (or relaxed/openpipe-art[langgraph] if needed)
@@ -287,3 +326,4 @@ See **RUN.md** for more options and troubleshooting.
 - [ ] LIBERO `torch.load` patched for PyTorch 2.6+ (`weights_only=False`)
 - [ ] ART ↔ vLLM patches applied: `python scripts/apply_vllm_patches.py`
 - [ ] `python scripts/check_libero_env.py` passes
+- [ ] VLA model envs created: `bash scripts/setup_vla_envs.sh` (see [§8](#8-vla-model-environments-per-model-conda-envs))

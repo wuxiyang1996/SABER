@@ -92,8 +92,13 @@ export MUJOCO_GL=egl
 export PYOPENGL_PLATFORM=egl
 export PYTHONUTF8=1
 
+# NOTE: Per-model conda environments are handled automatically by Python code.
+# model_factory.py launches non-JAX VLA models in subprocesses using
+# SubprocessVLAWrapper, which picks the correct conda env's Python binary
+# via _MODEL_ENV_MAP. See scripts/setup_vla_envs.sh for env creation.
+
 # ---- Model-specific defaults ----
-# Returns: default GPU, default replan_steps, extra env setup commands
+# Returns: default GPU, default replan_steps, default max_steps
 get_model_defaults() {
   local model=$1
   case "$model" in

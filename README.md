@@ -1,12 +1,15 @@
-# Adversarial Attack Framework for VLAs
+# SABER: A Stealthy Agentic Black-Box Attack Framework for Vision-Language-Action Models
 
-An adversarial attack framework built on **ART** (Agent Reinforcement Trainer). A GRPO-trained LLM attack agent learns to craft multi-modal perturbations — token, character, prompt, and visual — that degrade a frozen **Vision-Language-Action (VLA)** policy in the **LIBERO** manipulation benchmark. The primary target is **Pi0.5** (OpenPI flow-matching VLA); a secondary text-only mode attacks a frozen QA model on **HotpotQA**.
+**Paper:** [arXiv:2603.24935](https://arxiv.org/abs/2603.24935)
+
+SABER is a GRPO-trained ReAct attack agent that generates small, plausible adversarial instruction edits — using character-, token-, and prompt-level tools under a bounded edit budget — to degrade frozen **Vision-Language-Action (VLA)** policies in the **LIBERO** manipulation benchmark. On six VLA models, SABER reduces task success by 20.6%, increases action-sequence length by 55%, and raises constraint violations by 33%, while requiring 21.1% fewer tool calls and 54.7% fewer character edits than GPT-based baselines.
 
 ### Key capabilities
 
-- **Multi-modal attack surface** — token-level edits, character typos, prompt injections, and pixel-level visual perturbations, all exposed as LangGraph ReAct tools.
-- **Five reward objectives** — task failure, action inflation, thinking inflation, hallucination, and constraint violation — each with an optional stealth penalty.
+- **Instruction-level attack surface** — token-level edits, character typos, and prompt injections, all exposed as LangGraph ReAct tools.
+- **Three attack objectives** — task failure, action inflation, and constraint violation — each with an optional stealth penalty.
 - **GRPO training** — the attack agent's LoRA weights are updated via group-relative policy optimisation using ART, with no gradient through the victim model.
+- **Cross-model transfer** — attacks trained on Pi0.5 transfer to OpenVLA, ECoT, DeepThinkVLA, MolmoAct, InternVLA-M1, and others.
 
 ## Architecture
 
@@ -16,7 +19,7 @@ An adversarial attack framework built on **ART** (Agent Reinforcement Trainer). 
 ┌──────────────────────────────────────────────────────────────┐
 │          Attack Agent (Qwen2.5-3B-Instruct, LoRA)            │
 │  Sees: task instruction, observation image, baseline rollout │
-│  Tools: token / char / prompt / visual attack tools          │
+│  Tools: token / char / prompt attack tools                   │
 │  Trained via: ART / GRPO (LangGraph ReAct agent)             │
 └──────────────┬───────────────────────────────────────────────┘
                │  perturbations (text edits, image patches, …)
@@ -41,8 +44,6 @@ An adversarial attack framework built on **ART** (Agent Reinforcement Trainer). 
 │  Objective-specific signal from VLA rollout:                 │
 │    task_failure     — 1 if task fails, 0 if succeeds         │
 │    action_inflation — reward ∝ excess actions / time-steps   │
-│    thinking_inflation — reward ∝ excess VLA reasoning tokens │
-│    hallucination    — reward ∝ hallucinated objects/actions   │
 │    constraint_violation — reward ∝ safety constraint breaks  │
 │  + optional stealth penalty (perturbation magnitude)         │
 └──────────────────────────────────────────────────────────────┘
@@ -63,7 +64,7 @@ All attack tools follow a **two-phase, agent-driven** design: **FIND** (analyse 
 | **Visual** | FIND: `find_visual_targets(attack_type)` | Attack type (patch_roi, sparse_pixel, color_shift, etc.) | Returns image metadata + QA prompt |
 | | APPLY: `apply_patch_roi`, `apply_sparse_pixel`, `apply_color_shift`, `apply_sensor_corrupt`, etc. | Location, size, pattern, intensity, L∞ budget | Pixel-level or ROI perturbations on the camera observation |
 
-Tool sets are **declared per run** via `--tool_sets` (e.g. `token,char,prompt` or add `visual`). The agent can **chain** multiple tools in one episode (e.g. token replace then prompt wrap), up to `--max_turns` ReAct rounds. See `tools/tools.md` and `tools/tool_manual.md` for full API and attack-type lists.
+Tool sets are **declared per run** via `--tool_sets` (e.g. `token,char,prompt`). The agent can **chain** multiple tools in one episode (e.g. token replace then prompt wrap), up to `--max_turns` ReAct rounds. See `tools/tools.md` and `tools/tool_manual.md` for full API and attack-type lists.
 
 ### Agent pipeline (one VLA attack episode)
 
@@ -93,7 +94,7 @@ Training uses **ART** with a **LocalBackend** and **GRPO** (group-relative polic
    - Each rollout is the full pipeline above (baseline → attack agent → attack rollout → reward).
    - Results are grouped by scenario for GRPO.
 4. **GRPO update** — `backend.train(attack_model, groups, learning_rate=args.learning_rate)` updates only the **attack agent**’s LoRA weights. The victim VLA and LIBERO env are not differentiated; reward is a black-box signal.
-5. **Reward** — Per trajectory: `R = R_O − λ · P_stealth`, where `R_O` is the normalised objective reward (e.g. 1 if task failed under attack and baseline succeeded) and `P_stealth` penalises large or obvious perturbations. See `rwd_func/objective.md` for the five objectives and task-success gating.
+5. **Reward** — Per trajectory: `R = R_O − λ · P_stealth`, where `R_O` is the normalised objective reward (e.g. 1 if task failed under attack and baseline succeeded) and `P_stealth` penalises large or obvious perturbations. See `rwd_func/objective.md` for the three paper objectives and task-success gating.
 
 Key flags: `--groups_per_step`, `--trajectories_per_group`, `--num_epochs`, `--learning_rate`, `--max_turns`, `--replan_steps`, `--stealth_weight`. Checkpoints and logs go under `agent_attack_framework/outputs/`.
 
@@ -106,14 +107,12 @@ Key flags: `--groups_per_step`, `--trajectories_per_group`, `--num_epochs`, `--l
 - **P_stealth** — Perturbation visibility penalty in [0, 1]; text sub-penalties are weighted more than visual (default `text_emphasis = 2.0`).  
 - **λ** — Stealth weight (default **0.3**); set via `--stealth_weight`.
 
-**Five objectives:**
+**Three objectives (paper Table 1):**
 
 | Objective | What is rewarded | Task-success gate |
 |-----------|------------------|-------------------|
 | `task_failure` | VLA fails the LIBERO task (baseline succeeded → attack failed) | No — task failure is the goal |
 | `action_inflation` | VLA uses many more env steps than baseline (still completes task) | Yes — both baseline and attack must succeed |
-| `thinking_inflation` | VLA produces many more reasoning tokens than baseline (still succeeds) | Yes — both must succeed |
-| `hallucination` | Reasoning contradicts env state, erratic actions, or perturbation leaks into VLA output | Yes — both must succeed |
 | `constraint_violation` | Extra collisions, joint-limit hits, contact force, or action magnitude vs baseline | No — violations can occur regardless of task outcome |
 
 **Stealth penalty (P_stealth):** Text: token-edit ratio, character edit distance, added-token count (capped). Visual: L∞ norm, pixel-change ratio, SSIM degradation. Sub-penalties are averaged per modality; then `P_stealth = (text_emphasis × text_mean + visual_mean) / (text_emphasis + 1)`. This encourages small, low-visibility perturbations.
@@ -126,11 +125,9 @@ Key flags: `--groups_per_step`, `--trajectories_per_group`, `--num_epochs`, `--l
 agent_attack_framework/
 ├── agent/
 │   ├── __init__.py
-│   ├── rollout.py             # HotpotQA attack agent rollout (ART + LangGraph)
 │   └── vla_rollout.py         # VLA attack rollout (Pi0.5 + LIBERO, LangGraph ReAct)
 ├── tools/
 │   ├── __init__.py
-│   ├── attack.py              # add_suffix tool (HotpotQA)
 │   ├── token_attack.py        # Token-level tools: replace / remove / add / swap
 │   ├── char_attack.py         # Character-level tools: typo-style edits
 │   ├── prompt_attack.py       # Prompt-level tools: clause & sentence injection
@@ -138,11 +135,9 @@ agent_attack_framework/
 │   ├── tools.md               # Tool reference
 │   └── tool_manual.md         # Detailed tool usage guide
 ├── rwd_func/
-│   ├── rwd.py                 # Reward functions (5 objectives + stealth penalty)
+│   ├── rwd.py                 # Reward functions (3 objectives + stealth penalty)
 │   ├── metrics.py             # Evaluation metrics computation and formatting
 │   └── objective.md           # Reward objective documentation
-├── trainer/
-│   └── train.py               # ART GRPO training loop (HotpotQA)
 ├── libero_rollouts/
 │   ├── model_factory.py       # Unified VLA loader (per-model env routing)
 │   ├── pi05_libero_model.py   # Pi0.5 VLA wrapper (JAX)
@@ -160,39 +155,33 @@ agent_attack_framework/
 │   ├── run_all_libero_evals_parallel.py  # Parallel multi-model evaluation
 │   ├── model_registry.py      # Model hyperparameters and loading
 │   └── parallel_episode_runner.py
-├── dataset/
-│   ├── __init__.py
-│   └── hotpotqa.py            # HotpotQA loader + F1/EM metrics
-├── eval_model/
-│   ├── __init__.py
-│   └── qa_model.py            # Frozen Qwen2.5-3B QA wrapper
+├── cold_start/
+│   ├── collect.py             # Cold-start trajectory collection (GPT-5 Mini)
+│   └── sft_train.py           # SFT training from cold-start data
 ├── scripts/
+│   ├── run_train.sh           # GRPO training (parameterised by objective)
+│   ├── run_record.sh          # Record attack prompts (parameterised by objective)
+│   ├── run_eval_attack.sh     # Live attack eval (parameterised by objective)
+│   ├── run_eval_replay.sh     # Replay pre-recorded attacks on any VLA
 │   ├── setup_vla_envs.sh      # Create conda envs for all VLA model groups
 │   ├── check_libero_env.py    # Environment verification script
-│   └── apply_vllm_patches.py  # Auto-apply ART ↔ vLLM 0.11.x patches
-├── repos/
-│   ├── deepthinkvla/          # DeepThinkVLA source (for model code)
-│   └── internvla_m1/          # InternVLA-M1 source (for model code)
+│   ├── apply_vllm_patches.py  # Auto-apply ART ↔ vLLM 0.11.x patches
+│   └── dev/                   # Debug and demo scripts
+├── repos/                     # External model repos (cloned here, not committed)
 │
 │ ── Core scripts ──
 ├── train_vla.py               # GRPO training for VLA attack agent
 ├── eval_attack_vla.py         # Live attack evaluation (agent + VLA rollout)
+├── eval_baseline_vla.py       # Baseline VLA evaluation (no attack)
 ├── eval_replay_attack.py      # Replay pre-recorded attacks on any VLA (no agent)
 ├── aggregate_replay_results.py  # Cross-model replay result aggregation
-├── run.py                     # Convenience entry-point (HotpotQA + VLA)
 │
-│ ── Shell entrypoints ──
-├── run_train.sh               # Train attack agent (task_failure)
-├── run_train_constraint_violation.sh
-├── run_train_action_inflation.sh
-├── run_record_agent_outputs_task_failure.sh  # Record attack prompts
-├── run_eval_baseline_all_vlas.sh             # Baseline eval (no attack)
-├── run_eval_attack_all_vlas.sh               # Live attack eval (constraint_violation)
-├── run_eval_attack_all_vlas_task_failure.sh   # Live attack eval (task_failure)
-├── run_eval_attack_all_vlas_action_inflation.sh
-├── run_eval_replay_task_failure.sh           # Replay attack eval on all VLAs
+│ ── Shared utilities ──
+├── libero_utils.py            # Shared LIBERO env helpers and rollout functions
+├── env_setup.py               # Shared GPU resolution and cache setup
 │
 ├── install.sh                 # One-command full install (conda + deps + patches)
+├── run_eval_baseline_all_vlas.sh  # Baseline eval (no attack, all VLAs)
 ├── requirements.txt
 ├── INSTALL.md
 ├── RUN.md
@@ -459,13 +448,13 @@ bash scripts/setup_vla_envs.sh vla_internvla # InternVLA-M1 (transformers 4.52)
 
 The `model_factory.py` automatically routes each model to its correct environment. No manual `VLA_PYTHON` setting is needed.
 
-### Step 1: Record attack prompts (already done for task_failure)
+### Step 1: Record attack prompts
 
 Record the attack agent's perturbed instructions from source models:
 
 ```bash
-bash run_record_agent_outputs_task_failure.sh openpi_pi0
-bash run_record_agent_outputs_task_failure.sh openpi_pi05
+bash scripts/run_record.sh task_failure openpi_pi0
+bash scripts/run_record.sh task_failure openpi_pi05
 ```
 
 This produces JSON files with `original_instruction` and `perturbed_instruction` for each (suite, task, episode):
@@ -477,13 +466,15 @@ This produces JSON files with `original_instruction` and `perturbed_instruction`
 Replay the recorded perturbed instructions on victim models (no attack agent needed — 1 GPU only):
 
 ```bash
-# Replay on all 6 non-JAX models using both source records
-bash run_eval_replay_task_failure.sh
+# Replay on a specific model
+bash scripts/run_eval_replay.sh --victim openvla \
+  --record outputs/agent_output_records_task_failure_2/task_failure_openpi_pi05.json
 
-# Or specific models
-bash run_eval_replay_task_failure.sh openvla lightvla
+# Replay on all victim models
+bash scripts/run_eval_replay.sh --all-victims \
+  --record outputs/agent_output_records_task_failure_2/task_failure_openpi_pi05.json
 
-# Or run individual evaluations
+# Or call the Python script directly
 python eval_replay_attack.py \
   --victim openvla \
   --attack_record outputs/agent_output_records_task_failure_2/task_failure_openpi_pi05.json \
@@ -518,50 +509,7 @@ outputs/replay_eval_task_failure/
 └── aggregation.log
 ```
 
-## Quick Evaluation
-
-Compare baseline (clean questions) vs attack (with suffix):
-
-```bash
-cd agent_attack_framework
-python eval.py --n 10
-```
-
-## Training
-
-```bash
-cd agent_attack_framework
-python -m trainer.train \
-    --steps 50 \
-    --lr 5e-6 \
-    --traj-per-group 8 \
-    --groups-per-step 4 \
-    --train-samples 200
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--steps` | 50 | Max training steps |
-| `--lr` | 5e-6 | Learning rate |
-| `--traj-per-group` | 8 | Rollouts per scenario for reward variance |
-| `--groups-per-step` | 4 | Scenarios per training step |
-| `--train-samples` | 200 | Training scenarios from HotpotQA |
-| `--eval-every` | 5 | Validation frequency |
-
-## How It Works
-
-1. **Attack agent** (LoRA on Qwen3-1.7B) sees the question, context, and gold answer.
-2. It calls `add_suffix(suffix=...)` to append adversarial text to the question.
-3. The **frozen eval model** (Qwen2.5-3B-Instruct, no LoRA) answers the modified question.
-4. **Reward** = `1 - F1(eval_answer, gold)` — high when the attack succeeds.
-5. **GRPO** uses reward variance across rollouts to update the attack agent's policy.
-6. Over training, the agent learns what kinds of suffixes effectively fool the QA model.
-
----
-
-## Attack pi0.5 model in LIBERO (VLA)
-
-The same framework can train an attack agent to perturb **instructions and/or observations** fed to a **Vision-Language-Action (VLA)** policy in the **LIBERO** manipulation benchmark. For more detail on **tool design**, the **agent pipeline**, **training** (scenario batching, GRPO), and **reward design** (five objectives, stealth penalty, task-success gating), see the sections **Tool design**, **Agent pipeline (one VLA attack episode)**, **Training (VLA)**, and **Reward design** under Architecture above.
+## VLA Attack Training
 
 **Models used:**
 
@@ -680,8 +628,13 @@ GPU 0-2 each hold one Pi0.5 model copy; the 24 rollout worker threads are assign
 For a **2-GPU** setup: `python train_vla.py --vla_gpus 0 --attack_gpus 1 --rollout_workers 8`.
 On SLURM, indices are logical into the allocated GPU list. Override with `VLA_GPUS=0,1,2 ATTACK_GPUS=3` env vars if needed.
 
-**Tip — kill ghost threads on a GPU:** If a crashed or interrupted run leaves processes holding the GPU, you can free the device and then check memory usage (replace `nvidia3` with your GPU device, e.g. `nvidia0`, `nvidia1`):
+## Citation
 
-```bash
-fuser -k /dev/nvidia3 2>/dev/null; sleep 2; nvidia-smi --query-gpu=index,memory.used --format=csv
+```bibtex
+@article{wu2026saber,
+  title={{SABER}: A Stealthy Agentic Black-Box Attack Framework for Vision-Language-Action Models},
+  author={Wu, Xiyang and Shi, Guangyao and Wang, Qingzi and Li, Zongxia and Bedi, Amrit Singh and Manocha, Dinesh},
+  journal={arXiv preprint arXiv:2603.24935},
+  year={2026}
+}
 ```

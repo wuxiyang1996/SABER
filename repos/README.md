@@ -1,27 +1,21 @@
-# Model repos for LIBERO evaluation
+# External model repos
 
-Put cloned model repositories here so the eval uses them automatically (no `--repo_path` needed).
+Some VLA models require cloning their source repo for custom model classes
+that are not available through HuggingFace `transformers` alone.
 
-| Directory   | Repo to clone |
-|------------|----------------|
-| `openvla/` | https://github.com/openvla/openvla |
-| `molmoact/` | https://github.com/allenai/molmoact |
-| `deepthinkvla/` | https://github.com/OpenBMB/DeepThinkVLA |
-| `ecot/` or `openvla/` | ECoT uses the OpenVLA repo (clone openvla once; use as `openvla` or `ecot`) |
-| `internvla_m1/` | https://github.com/InternRobotics/InternVLA-M1 |
-| `lightvla/` | https://github.com/LiAutoAD/LightVLA |
+Clone the repos below into this directory. The eval wrappers and
+`setup_vla_envs.sh` detect them automatically.
 
-**X-VLA** and **StarVLA** do not need a repo (they use `lerobot-eval` with Hugging Face checkpoints).
+| Directory | Repo | Used by |
+|---|---|---|
+| `deepthinkvla/` | https://github.com/OpenBMB/DeepThinkVLA | DeepThinkVLA (custom PaliGemma model class) |
+| `internvla_m1/` | https://github.com/InternRobotics/InternVLA-M1 | InternVLA-M1 (custom architecture) |
 
-Example after cloning:
-
-```
-repos/
-  openvla/          # git clone https://github.com/openvla/openvla openvla
-  molmoact/         # git clone https://github.com/allenai/molmoact molmoact
-  deepthinkvla/     # git clone https://github.com/OpenBMB/DeepThinkVLA deepthinkvla
-  internvla_m1/     # git clone https://github.com/InternRobotics/InternVLA-M1 internvla_m1
-  lightvla/         # git clone https://github.com/LiAutoAD/LightVLA lightvla
+```bash
+cd repos/
+git clone https://github.com/OpenBMB/DeepThinkVLA deepthinkvla
+git clone https://github.com/InternRobotics/InternVLA-M1 internvla_m1
 ```
 
-For ECoT, use the same `openvla/` clone (eval looks for `repos/ecot` or `repos/openvla` when model is ecot).
+Other paper models (Pi0.5, OpenVLA, ECoT, MolmoAct) load directly from
+HuggingFace and do not need a local repo clone.

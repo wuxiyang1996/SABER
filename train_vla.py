@@ -81,20 +81,9 @@ warnings.filterwarnings(
 # framework import.  --vla_gpu and --attack_gpus are *logical indices*
 # into the SLURM-visible list, NOT raw physical IDs.
 
-def _early_resolve_vla_gpus() -> list[int]:
-    raw = None
-    for i, tok in enumerate(sys.argv):
-        if tok in ("--vla_gpu", "--vla_gpus") and i + 1 < len(sys.argv):
-            raw = sys.argv[i + 1]
-            break
-        if tok.startswith("--vla_gpu=") or tok.startswith("--vla_gpus="):
-            raw = tok.split("=", 1)[1]
-            break
-    if raw is None:
-        raw = os.environ.get("VLA_GPUS", os.environ.get("VLA_GPU", "0,1,2"))
-    return [int(g.strip()) for g in raw.split(",")]
+from env_setup import early_resolve_vla_gpus, logical_to_physical, setup_cache_dirs
 
-_VLA_GPUS = _early_resolve_vla_gpus()
+_VLA_GPUS = early_resolve_vla_gpus()
 
 def _early_resolve_attack_gpus() -> str:
     for i, tok in enumerate(sys.argv):
@@ -111,10 +100,7 @@ _orig_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "")
 _orig_gpu_list = [g.strip() for g in _orig_visible.split(",") if g.strip()]
 
 def _logical_to_physical(idx: int) -> str:
-    """Map a logical GPU index to the physical ID from SLURM's list."""
-    if _orig_gpu_list and idx < len(_orig_gpu_list):
-        return _orig_gpu_list[idx]
-    return str(idx)
+    return logical_to_physical(idx, _orig_gpu_list)
 
 # Default attack GPUs: all visible GPUs except the VLA GPU(s).
 if _ATTACK_GPUS_RAW:
@@ -149,20 +135,7 @@ os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.45")
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
 # ---- Model / data cache directory --------------------------------------
-# All caches (OpenPI checkpoints, HuggingFace, PyTorch, etc.) go under
-# vlm-robot/.cache so shared clusters don't fill ~/.cache.
-_CACHE_ROOT = os.path.realpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", ".cache"
-))
-os.environ.setdefault("OPENPI_DATA_HOME", _CACHE_ROOT)
-os.environ.setdefault("HF_HOME", os.path.join(_CACHE_ROOT, "huggingface"))
-os.environ.setdefault("HF_HUB_CACHE", os.path.join(_CACHE_ROOT, "huggingface", "hub"))
-os.environ.setdefault("TRANSFORMERS_CACHE", os.path.join(_CACHE_ROOT, "huggingface"))
-os.environ.setdefault("TORCH_HOME", os.path.join(_CACHE_ROOT, "torch"))
-try:
-    os.makedirs(_CACHE_ROOT, exist_ok=True)
-except OSError:
-    pass
+setup_cache_dirs()
 
 # ---- ART output (LoRA checkpoints, logs, trajectories) ------------------
 # Store under agent_attack_framework/outputs so everything stays in the project.
@@ -201,12 +174,10 @@ from art.utils import iterate_dataset
 
 from agent.vla_rollout import (
     ToolSet,
-    VLAAttackScenario,
     build_scenarios,
     build_scenarios_multi_suite,
     clear_baseline_cache,
     parse_task_ids,
-    set_vla_model,
     set_vla_models,
     vla_attack_rollout,
 )

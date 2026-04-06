@@ -5,12 +5,6 @@
 From `agent_attack_framework/` with the right environment and dependencies:
 
 ```bash
-python run.py vla --objective task_failure --task_suite libero_spatial --task_ids 0,1,2
-```
-
-Or call the script directly (same options):
-
-```bash
 python train_vla.py --objective task_failure --task_suite libero_spatial --task_ids 0,1,2
 ```
 
@@ -19,7 +13,7 @@ python train_vla.py --objective task_failure --task_suite libero_spatial --task_
 Use a 7B agent for stronger attack behavior (requires more GPU memory for vLLM):
 
 ```bash
-python run.py vla \
+python train_vla.py \
   --base_model Qwen/Qwen2.5-7B-Instruct \
   --model_name qwen2.5-7B \
   --objective task_failure \
@@ -27,10 +21,10 @@ python run.py vla \
   --task_ids 0,1,2
 ```
 
-Other objectives: `action_inflation`, `thinking_inflation`, `hallucination`, `constraint_violation`. Example for action inflation:
+Other objectives: `action_inflation`, `constraint_violation`. Example for action inflation:
 
 ```bash
-python run.py vla \
+python train_vla.py \
   --base_model Qwen/Qwen2.5-7B-Instruct \
   --model_name qwen2.5-7B \
   --objective action_inflation \
@@ -44,13 +38,13 @@ To improve attack success, allow the agent to use **multiple tools** (and more r
 
 1. **Enable several tool families** so the agent can choose token, char, prompt, and/or visual attacks:
    ```bash
-   python run.py vla --tool_sets token,char,prompt,visual ...
+   python train_vla.py --tool_sets token,char,prompt ...
    ```
-   Default is `token,char,prompt`; add `visual` for image perturbations.
+   Default is `token,char,prompt`.
 
 2. **Increase tool-call rounds** so the agent can chain tools (e.g. apply one attack, then FIND again and apply another):
    ```bash
-   python run.py vla --max_turns 10 ...
+   python train_vla.py --max_turns 10 ...
    ```
    Default is 8. Use 10–12 if single-tool attacks often fail and you want the agent to try multiple strategies or chain token + prompt, etc.
 
@@ -106,9 +100,9 @@ The run can appear to hang at a few points. Here’s what usually happens and wh
 
 ### 1. Right after starting (imports)
 
-- **What you see**: No log for a while after `python run.py vla ...`.
+- **What you see**: No log for a while after `python train_vla.py ...`.
 - **Cause**: Heavy imports (PyTorch, JAX, ART, LIBERO, etc.).
-- **What to do**: Wait 30–60 s. If it still does nothing, run with `python -u run.py vla ...` so stdout is unbuffered and check for import errors (e.g. missing LIBERO, RoboTwin/openpi). If you see `ModuleNotFoundError: No module named 'openpi'`, set `ROBOTWIN_ROOT` or clone RoboTwin; see INSTALL.md.
+- **What to do**: Wait 30–60 s. If it still does nothing, run with `python -u train_vla.py ...` so stdout is unbuffered and check for import errors (e.g. missing LIBERO, RoboTwin/openpi). If you see `ModuleNotFoundError: No module named 'openpi'`, set `ROBOTWIN_ROOT` or clone RoboTwin; see INSTALL.md.
 
 ### 2. “Loading Pi0.5 VLA model on GPU 0 …”
 
@@ -189,7 +183,7 @@ The run can appear to hang at a few points. Here’s what usually happens and wh
 Use one task, one episode, one group, and one trajectory per group so the first step finishes quickly and you can see that nothing is stuck:
 
 ```bash
-python run.py vla \
+python train_vla.py \
   --objective task_failure \
   --task_suite libero_spatial \
   --task_ids 0 \
@@ -202,7 +196,7 @@ python run.py vla \
 Optional: shorten the episode so each rollout is faster (e.g. 50 steps):
 
 ```bash
-python run.py vla \
+python train_vla.py \
   --objective task_failure \
   --task_suite libero_spatial \
   --task_ids 0 \
@@ -222,7 +216,7 @@ If this runs to “Step 0 — gathered … training …” and then “Training 
 If you only have one GPU:
 
 ```bash
-python run.py vla \
+python train_vla.py \
   --task_suite libero_spatial \
   --task_ids 0 \
   --vla_gpus 0 \

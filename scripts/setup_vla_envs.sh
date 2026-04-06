@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Create conda environments for all VLA model groups.
+# Create conda environments for VLA victim models evaluated in the paper.
 #
-# Three environments are created/updated to cover all 6 non-JAX VLA models:
+# Each non-JAX VLA model runs in its own conda env (different transformers
+# versions, repo-specific deps).  model_factory.py launches each model in a
+# subprocess using SubprocessVLAWrapper, picking the correct Python binary
+# via _MODEL_ENV_MAP — shell scripts only activate the main runpod env.
 #
-#   vla_models    — OpenVLA, LightVLA, ECoT, DeepThinkVLA
-#                   (transformers 4.41.x, OpenVLA causal mask compat + PaliGemma)
+#   vla_models       — OpenVLA, ECoT
+#                      (transformers 4.41.x, PaliGemma + causal mask compat)
 #
-#   vla_molmoact  — MolmoAct
-#                   (transformers >= 4.51 for use_kernel_forward_from_hub)
+#   vla_deepthinkvla — DeepThinkVLA
+#                      (transformers 4.41.x + DeepThinkVLA repo source)
 #
-#   vla_internvla — InternVLA-M1
-#                   (transformers 4.52.x, custom multi-module architecture)
+#   vla_molmoact     — MolmoAct
+#                      (transformers >= 4.51 for use_kernel_forward_from_hub)
 #
-# JAX models (openpi_pi0, openpi_pi05) run in the main runpod env
-# and don't need a separate environment.
+#   vla_internvla    — InternVLA-M1
+#                      (transformers 4.52.x, custom multi-module architecture)
+#
+# JAX models (Pi0.5, the primary VLA) run in the main runpod env.
 #
 # Prerequisites:
 #   - conda (miniforge/miniconda)
@@ -22,10 +27,11 @@
 #   - LIBERO repo at /workspace/LIBERO (or $LIBERO_ROOT)
 #
 # Usage:
-#   bash scripts/setup_vla_envs.sh              # create all 3 envs
-#   bash scripts/setup_vla_envs.sh vla_models   # create/update only vla_models
-#   bash scripts/setup_vla_envs.sh vla_molmoact # create/update only vla_molmoact
-#   bash scripts/setup_vla_envs.sh vla_internvla # create/update only vla_internvla
+#   bash scripts/setup_vla_envs.sh                   # create all 4 envs
+#   bash scripts/setup_vla_envs.sh vla_models        # single env
+#   bash scripts/setup_vla_envs.sh vla_deepthinkvla  # single env
+#   bash scripts/setup_vla_envs.sh vla_molmoact      # single env
+#   bash scripts/setup_vla_envs.sh vla_internvla     # single env
 # ============================================================================
 set -euo pipefail
 
@@ -81,14 +87,14 @@ patch_libero_torch_load() {
 }
 
 # ============================================================================
-# ENV 1: vla_models — OpenVLA, LightVLA, ECoT, DeepThinkVLA
+# ENV 1: vla_models — OpenVLA, ECoT
 # ============================================================================
 setup_vla_models() {
     local ENV_NAME="vla_models"
     echo ""
     echo "========================================"
     echo "  Setting up: ${ENV_NAME}"
-    echo "  Models: OpenVLA, LightVLA, ECoT, DeepThinkVLA"
+    echo "  Models: OpenVLA, ECoT"
     echo "  transformers: 4.41.x (PaliGemma support + OpenVLA causal mask compat)"
     echo "========================================"
 
@@ -140,17 +146,92 @@ setup_vla_models() {
 import sys
 sys.path.insert(0, '${FRAMEWORK_DIR}/libero_rollouts')
 from openvla_wrapper import OpenVLAWrapper
-from lightvla_wrapper import LightVLAWrapper
 from ecot_wrapper import ECoTWrapper
-from deepthinkvla_rollout_wrapper import DeepThinkVLARolloutWrapper
-print('  [OK] All OpenVLA-family wrappers importable')
+print('  [OK] OpenVLA + ECoT wrappers importable')
 " 2>/dev/null || echo "  [WARN] Some wrapper imports failed (models may need downloading)"
 
     echo "  Done: ${ENV_NAME}"
 }
 
 # ============================================================================
-# ENV 2: vla_molmoact — MolmoAct
+# ENV 2: vla_deepthinkvla — DeepThinkVLA
+# ============================================================================
+setup_vla_deepthinkvla() {
+    local ENV_NAME="vla_deepthinkvla"
+    echo ""
+    echo "========================================"
+    echo "  Setting up: ${ENV_NAME}"
+    echo "  Models: DeepThinkVLA"
+    echo "  transformers: 4.41.x (PaliGemma) + DeepThinkVLA repo"
+    echo "========================================"
+
+    if conda env list | grep -q "^${ENV_NAME} "; then
+        echo "  Environment '${ENV_NAME}' already exists. Updating..."
+        conda activate "${ENV_NAME}"
+    else
+        echo "  Creating conda env '${ENV_NAME}' (Python 3.11)..."
+        conda create -n "${ENV_NAME}" python=3.11 -y
+        conda activate "${ENV_NAME}"
+
+        conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
+
+        pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 \
+            --index-url "${PYTORCH_INDEX}"
+    fi
+
+    pip install --upgrade \
+        "transformers>=4.41,<4.42" \
+        "accelerate>=1.0" \
+        "timm>=1.0" \
+        "bitsandbytes>=0.49" \
+        "pillow>=10.0" \
+        "numpy>=2" \
+        "scipy" \
+        "scikit-image" \
+        "opencv-python-headless" \
+        "h5py" \
+        "einops" \
+        "sentencepiece" \
+        "safetensors" \
+        "huggingface_hub>=0.20" \
+        "imageio" \
+        "mujoco>=3.0" \
+        "robosuite==1.4.0" \
+        "bddl>=3.0" \
+        "easydict" \
+        "gym==0.26.2" \
+        "PyOpenGL" \
+        "glfw" \
+        "matplotlib"
+
+    install_libero
+    patch_libero_torch_load
+
+    local DEEPTHINKVLA_REPO="${FRAMEWORK_DIR}/repos/deepthinkvla"
+    if [[ ! -d "${DEEPTHINKVLA_REPO}" ]]; then
+        DEEPTHINKVLA_REPO="${FRAMEWORK_DIR}/repos/DeepThinkVLA"
+    fi
+    if [[ -d "${DEEPTHINKVLA_REPO}" ]]; then
+        echo "  DeepThinkVLA repo found at ${DEEPTHINKVLA_REPO}"
+    else
+        echo "  WARNING: DeepThinkVLA repo not found."
+        echo "  Clone it: git clone https://github.com/OpenBMB/DeepThinkVLA.git ${FRAMEWORK_DIR}/repos/deepthinkvla"
+    fi
+
+    echo ""
+    echo "  Verifying imports..."
+    MUJOCO_GL=egl PYOPENGL_PLATFORM=egl python -c "
+import sys
+sys.path.insert(0, '${FRAMEWORK_DIR}/libero_rollouts')
+from transformers import AutoProcessor, GenerationConfig
+print('  [OK] transformers + AutoProcessor available')
+" 2>/dev/null || echo "  [WARN] DeepThinkVLA import check failed"
+
+    echo "  Done: ${ENV_NAME}"
+}
+
+# ============================================================================
+# ENV 3: vla_molmoact — MolmoAct
 # ============================================================================
 setup_vla_molmoact() {
     local ENV_NAME="vla_molmoact"
@@ -218,7 +299,7 @@ print('  [OK] MolmoActWrapper importable')
 }
 
 # ============================================================================
-# ENV 3: vla_internvla — InternVLA-M1
+# ENV 4: vla_internvla — InternVLA-M1
 # ============================================================================
 setup_vla_internvla() {
     local ENV_NAME="vla_internvla"
@@ -307,82 +388,6 @@ print('  [OK] InternVLAWrapper importable')
 }
 
 # ============================================================================
-# ENV 4: vla_inspirevla — InspireVLA (minivla-inspire-libero-union4)
-# ============================================================================
-setup_vla_inspirevla() {
-    local ENV_NAME="vla_inspirevla"
-    echo ""
-    echo "========================================"
-    echo "  Setting up: ${ENV_NAME}"
-    echo "  Models: InspireVLA (minivla-inspire-libero-union4)"
-    echo "  Same base as vla_models; add openvla-mini for .pt checkpoint inference."
-    echo "========================================"
-
-    if conda env list | grep -q "^${ENV_NAME} "; then
-        echo "  Environment '${ENV_NAME}' already exists. Updating..."
-        conda activate "${ENV_NAME}"
-    else
-        echo "  Creating conda env '${ENV_NAME}' (Python 3.11)..."
-        conda create -n "${ENV_NAME}" python=3.11 -y
-        conda activate "${ENV_NAME}"
-
-        conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
-
-        pip install torch==2.9.0 torchvision==0.24.0 torchaudio==2.9.0 \
-            --index-url "${PYTORCH_INDEX}"
-    fi
-
-    pip install --upgrade \
-        "transformers>=4.41,<4.42" \
-        "accelerate>=1.0" \
-        "timm>=1.0" \
-        "pillow>=10.0" \
-        "numpy>=2" \
-        "scipy" \
-        "scikit-image" \
-        "opencv-python-headless" \
-        "h5py" \
-        "einops" \
-        "sentencepiece" \
-        "safetensors" \
-        "huggingface_hub>=0.20" \
-        "imageio" \
-        "mujoco>=3.0" \
-        "robosuite==1.4.0" \
-        "bddl>=3.0" \
-        "easydict" \
-        "gym==0.26.2" \
-        "PyOpenGL" \
-        "glfw" \
-        "matplotlib"
-
-    install_libero
-    patch_libero_torch_load
-
-    # Install openvla-mini (Prismatic) dependencies for InspireVLA inference
-    local OPENVLA_MINI_REPO="${FRAMEWORK_DIR}/repos/openvla_mini"
-    if [[ ! -d "${OPENVLA_MINI_REPO}" ]]; then
-        echo "  Cloning openvla-mini repo..."
-        git clone --depth 1 https://github.com/Stanford-ILIAD/openvla-mini.git "${OPENVLA_MINI_REPO}"
-    fi
-
-    echo "  Installing Prismatic inference dependencies..."
-    pip install --upgrade \
-        "draccus==0.8.0" \
-        "rich" \
-        "jsonlines" \
-        "json-numpy" \
-        "timm==0.9.10" \
-        "tensorflow==2.15.0" \
-        "tensorflow_datasets==4.9.3" \
-        "tensorflow_graphics==2021.12.3" \
-        "dlimp @ git+https://github.com/moojink/dlimp_openvla" \
-        2>/dev/null || echo "  [WARN] Some Prismatic deps failed (non-critical)"
-
-    echo "  Done: ${ENV_NAME}"
-}
-
-# ============================================================================
 # Main dispatcher
 # ============================================================================
 
@@ -392,27 +397,19 @@ echo "  Target: ${TARGET}"
 echo "============================================"
 
 case "$TARGET" in
-    vla_models)
-        setup_vla_models
-        ;;
-    vla_molmoact)
-        setup_vla_molmoact
-        ;;
-    vla_internvla)
-        setup_vla_internvla
-        ;;
-    vla_inspirevla)
-        setup_vla_inspirevla
-        ;;
+    vla_models)        setup_vla_models ;;
+    vla_deepthinkvla)  setup_vla_deepthinkvla ;;
+    vla_molmoact)      setup_vla_molmoact ;;
+    vla_internvla)     setup_vla_internvla ;;
     all)
         setup_vla_models
+        setup_vla_deepthinkvla
         setup_vla_molmoact
         setup_vla_internvla
-        setup_vla_inspirevla
         ;;
     *)
         echo "ERROR: Unknown target '${TARGET}'."
-        echo "Usage: bash scripts/setup_vla_envs.sh [vla_models|vla_molmoact|vla_internvla|vla_inspirevla|all]"
+        echo "Usage: bash scripts/setup_vla_envs.sh [vla_models|vla_deepthinkvla|vla_molmoact|vla_internvla|all]"
         exit 1
         ;;
 esac
@@ -421,16 +418,16 @@ echo ""
 echo "============================================"
 echo "  Environment setup complete!"
 echo ""
-echo "  VLA model → environment mapping:"
-echo "    OpenVLA      → vla_models"
-echo "    LightVLA     → vla_models"
-echo "    ECoT         → vla_models"
-echo "    DeepThinkVLA → vla_models"
-echo "    MolmoAct     → vla_molmoact"
-echo "    InternVLA-M1 → vla_internvla"
-echo "    InspireVLA   → vla_inspirevla"
-echo "    Pi0 / Pi0.5  → runpod (in-process, JAX)"
+echo "  VLA model → conda environment mapping (paper models):"
+echo "    Pi0.5 (source)     → runpod (in-process, JAX)"
+echo "    OpenVLA, ECoT      → vla_models"
+echo "    DeepThinkVLA       → vla_deepthinkvla"
+echo "    MolmoAct           → vla_molmoact"
+echo "    InternVLA-M1       → vla_internvla"
+echo ""
+echo "  Env switching is automatic: model_factory.py launches each model"
+echo "  in a subprocess using the correct env's Python binary."
 echo ""
 echo "  To run replay eval:"
-echo "    bash run_eval_replay_task_failure.sh"
+echo "    bash scripts/run_eval_replay.sh --victim openvla --record <path>"
 echo "============================================"

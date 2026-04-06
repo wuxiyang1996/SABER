@@ -2,7 +2,7 @@
 with both seed=7 (known-good) and seed=42 (used in training), to isolate why
 baselines fail during training.
 """
-import sys, os, collections, pathlib
+import sys, os, collections
 import numpy as np
 
 os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"] = "0.45"
@@ -12,12 +12,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "openpi/src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "openpi/packages/openpi-client/src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "libero_rollouts"))
 
-from libero.libero import benchmark, get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
 from openpi_client import image_tools
 from pi05_libero_model import Pi05LiberoModel, preprocess_image, build_libero_state
-
-DUMMY_ACTION = [0.0] * 6 + [-1.0]
+from libero_utils import create_libero_env, reset_env
 
 TASKS = [
     ("libero_goal", 0),
@@ -32,28 +29,6 @@ def official_preprocess(img, size=224):
     img = image_tools.resize_with_pad(img, size, size)
     img = image_tools.convert_to_uint8(img)
     return img
-
-
-def make_env(suite, task_id, seed):
-    bd = benchmark.get_benchmark_dict()
-    ts = bd[suite]()
-    task = ts.get_task(task_id)
-    init_states = ts.get_task_init_states(task_id)
-    desc = task.language
-    bddl = str(pathlib.Path(get_libero_path("bddl_files"))
-               / task.problem_folder / task.bddl_file)
-    env = OffScreenRenderEnv(
-        bddl_file_name=bddl, camera_heights=256, camera_widths=256)
-    env.seed(seed)
-    return env, init_states, desc
-
-
-def reset_env(env, init_states, ep_idx=0):
-    env.reset()
-    obs = env.set_init_state(init_states[ep_idx % len(init_states)])
-    for _ in range(10):
-        obs, _, _, _ = env.step(DUMMY_ACTION)
-    return obs
 
 
 def run_episode(model, env, init_states, ep_idx, instruction, max_steps,
@@ -111,7 +86,7 @@ def main():
     print("Model loaded and warmed up.\n")
 
     for suite, task_id in TASKS:
-        env0, _, desc = make_env(suite, task_id, 7)
+        env0, _, desc = create_libero_env(suite, task_id, 7)
         env0.close()
         print("=" * 70)
         print(f"TASK: {suite} / task {task_id}: {desc}")
@@ -120,7 +95,7 @@ def main():
         for seed in [7, 42]:
             for pname, use_off in [("official_PIL", True),
                                    ("cv2_resize", False)]:
-                env, inits, d = make_env(suite, task_id, seed)
+                env, inits, d = create_libero_env(suite, task_id, seed)
                 ok, steps, cs = run_episode(
                     model, env, inits, 0, d,
                     max_steps=400, replan=5,
@@ -131,7 +106,7 @@ def main():
                       f"cs_true={n_true}/{len(cs)}")
                 env.close()
 
-        env, inits, d = make_env(suite, task_id, 42)
+        env, inits, d = create_libero_env(suite, task_id, 42)
         raw = env.env if hasattr(env, "env") else env
         ok, steps, cs = run_episode(
             model, env, inits, 0, d,
