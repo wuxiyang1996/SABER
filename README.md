@@ -25,11 +25,16 @@
 ## Installation
 
 ```bash
-git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git ../LIBERO
+# 1. Core environment (LIBERO is auto-cloned if not present)
 bash installation/install.sh          # creates conda env "vast" (Python 3.11)
-bash installation/setup_vla_envs.sh   # per-model conda envs for victim VLAs
 
-# DeepThinkVLA and InternVLA-M1 require their source repos:
+# 2. OpenPI — required for Pi0.5 VLA training/inference
+git clone https://github.com/Physical-Intelligence/openpi.git openpi
+
+# 3. Per-model conda envs for victim VLA evaluation
+bash installation/setup_vla_envs.sh
+
+# 4. (Optional) DeepThinkVLA and InternVLA-M1 require their source repos:
 cd repos/
 git clone https://github.com/OpenBMB/DeepThinkVLA deepthinkvla
 git clone https://github.com/InternRobotics/InternVLA-M1 internvla_m1
@@ -41,6 +46,8 @@ If you encounter import errors or compatibility issues, apply the included patch
 python installation/apply_vllm_patches.py   # ART ↔ vLLM compatibility fixes
 python installation/check_libero_env.py     # verify all dependencies
 ```
+
+> **Note:** Headless rendering requires `libegl1` (`apt-get install -y libegl1`). The installer handles this automatically on Debian/Ubuntu systems.
 
 See **[INSTALL.md](installation/INSTALL.md)** for manual setup, env options, and troubleshooting.
 
@@ -158,6 +165,7 @@ agent_attack_framework/
 ├── cold_start/               # Cold-start trajectory collection
 ├── scripts/                  # Training & evaluation shell scripts
 ├── installation/             # Installer, patches, requirements, env setup
+├── openpi/                   # OpenPI library (Pi0.5 VLA, cloned separately)
 ├── repos/                    # External model repos (DeepThinkVLA, InternVLA-M1)
 └── RUN.md                    # Running guide & troubleshooting
 ```

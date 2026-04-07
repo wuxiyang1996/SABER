@@ -13,7 +13,7 @@
 # Prerequisites:
 #   - conda (miniforge / miniconda / anaconda)
 #   - NVIDIA GPU with CUDA 12.x driver
-#   - LIBERO repo cloned (set LIBERO_ROOT or place at ../LIBERO)
+#   - LIBERO repo at ../LIBERO (auto-cloned if missing)
 # ============================================================================
 set -euo pipefail
 
@@ -78,6 +78,13 @@ echo ""
 echo ">>> [2/8] Installing conda build deps (gcc, OpenGL, Mesa)..."
 conda install -c conda-forge gcc_linux-64 gxx_linux-64 libopengl mesalib -y
 
+# EGL library for headless MuJoCo rendering (needed by LIBERO/robosuite).
+# Without libegl1 you get: 'NoneType' object has no attribute 'eglQueryString'
+if command -v apt-get &>/dev/null; then
+    echo "    Installing libegl1 (headless EGL for MuJoCo)..."
+    apt-get update -qq && apt-get install -y -qq libegl1 2>/dev/null || true
+fi
+
 # ------------------------------------------------------------------
 # 3. PyTorch + JAX (order matters)
 # ------------------------------------------------------------------
@@ -97,6 +104,21 @@ pip install -r "${SCRIPT_DIR}/requirements.txt" || {
     echo "    pip install failed. Trying fallback: install openpipe-art without backend extra..."
     pip install "openpipe-art[langgraph]==0.5.9"
     pip install -r "${SCRIPT_DIR}/requirements.txt" --no-deps
+
+    echo ""
+    echo "    Fallback used --no-deps; installing missing transitive dependencies..."
+    pip install --no-input "huggingface-hub>=0.34.0,<1.0" \
+        threadpoolctl accelerate safetensors \
+        watchfiles xgrammar pyzmq "ray[cgraph]>=2.48.0" python-json-logger \
+        py-cpuinfo pybase64 lm-format-enforcer compressed-tensors gguf \
+        mistral_common depyf numba openai-harmony outlines_core partial-json-parser \
+        cloudpickle "diskcache==5.6.3" "fastapi[standard]>=0.115.0" flashinfer-python \
+        lark llguidance model-hosting-container-standards msgspec anthropic blake3 cbor2 \
+        typeguard bitsandbytes datasets diffusers hf_transfer peft unsloth_zoo wheel \
+        decorator google-auth google-auth-oauthlib "google-cloud-storage>=3.9.0" \
+        contourpy cycler fonttools kiwisolver pyparsing absl-py \
+        wrapt "etils[epath,epy]" glfw humanize simplejson tensorstore optax \
+        gym_notices || echo "    [WARN] Some transitive deps failed (non-critical)"
 }
 
 # ------------------------------------------------------------------
@@ -111,6 +133,10 @@ pip install --upgrade "torchcodec>=0.6.0"
 # ------------------------------------------------------------------
 echo ""
 echo ">>> [6/8] Installing LIBERO..."
+if [[ ! -d "${LIBERO_ROOT}" ]]; then
+    echo "    LIBERO not found at ${LIBERO_ROOT}, cloning..."
+    git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git "${LIBERO_ROOT}"
+fi
 if [[ -d "${LIBERO_ROOT}" ]]; then
     # Ensure the intermediate libero/ dir has __init__.py (needed for find_packages)
     if [[ -d "${LIBERO_ROOT}/libero" ]] && [[ ! -f "${LIBERO_ROOT}/libero/__init__.py" ]]; then

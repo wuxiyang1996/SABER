@@ -14,11 +14,17 @@ cd "$(dirname "$0")/.."
 
 OBJECTIVE="${1:?Usage: $0 <task_failure|action_inflation|constraint_violation>}"
 
-# ---- Conda activation ----
-for p in /workspace/miniforge3 /opt/miniforge3 /opt/miniconda3 ~/miniforge3 ~/miniconda3; do
-  [[ -f "${p}/etc/profile.d/conda.sh" ]] && { source "${p}/etc/profile.d/conda.sh"; break; }
-done
-conda activate runpod
+# ---- Environment activation ----
+# Try saber venv first, then fall back to conda runpod
+SABER_VENV="/workspace/miniforge3/envs/saber/bin/activate"
+if [[ -f "$SABER_VENV" ]]; then
+  source "$SABER_VENV"
+else
+  for p in /workspace/miniforge3 /opt/miniforge3 /opt/miniconda3 ~/miniforge3 ~/miniconda3; do
+    [[ -f "${p}/etc/profile.d/conda.sh" ]] && { source "${p}/etc/profile.d/conda.sh"; break; }
+  done
+  conda activate runpod
+fi
 
 # ---- Headless rendering (MuJoCo / robosuite) ----
 export MUJOCO_GL="${MUJOCO_GL:-egl}"
@@ -26,8 +32,11 @@ export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 export PYTHONUTF8=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True,max_split_size_mb:256}"
 
-# Ensure conda env libs are on the linker path
-export LD_LIBRARY_PATH="${CONDA_PREFIX}/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Ensure env libs are on the linker path
+ENV_LIB="${CONDA_PREFIX:-${VIRTUAL_ENV:-}}/lib"
+if [[ -d "$ENV_LIB" ]]; then
+  export LD_LIBRARY_PATH="${ENV_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 # Prefer the vast venv Python; fall back to env python
 if [[ -x /venv/vast/bin/python ]]; then
