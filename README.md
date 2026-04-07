@@ -14,6 +14,7 @@
 
 - [Installation](#installation)
 - [Architecture](#architecture)
+- [Pretrained Checkpoints](#pretrained-checkpoints)
 - [Attack Examples](#attack-examples)
 - [Running SABER](#running-saber)
 - [Results](#results)
@@ -75,6 +76,26 @@ Three attack objectives are supported:
 | `task_failure` | VLA fails the task (baseline succeeded) |
 | `action_inflation` | VLA uses excess steps but still succeeds |
 | `constraint_violation` | Extra collisions, joint-limit hits, contact force |
+
+## Pretrained Checkpoints
+
+We release the GRPO-trained LoRA adapters for all three attack objectives on HuggingFace:
+
+| Objective | HuggingFace | GRPO Step | Base Model |
+|-----------|-------------|-----------|------------|
+| `task_failure` | [`IntelligenceLab/saber-attack-agent-task-failure`](https://huggingface.co/IntelligenceLab/saber-attack-agent-task-failure) | 150 | `Qwen/Qwen2.5-3B-Instruct` |
+| `action_inflation` | [`IntelligenceLab/saber-attack-agent-action-inflation`](https://huggingface.co/IntelligenceLab/saber-attack-agent-action-inflation) | 50 | `Qwen/Qwen2.5-3B-Instruct` |
+| `constraint_violation` | [`IntelligenceLab/saber-attack-agent-constraint-violation`](https://huggingface.co/IntelligenceLab/saber-attack-agent-constraint-violation) | 150 | `Qwen/Qwen2.5-3B-Instruct` |
+
+Each is a LoRA adapter (rank 8, ~75 MB) loadable with `peft`:
+
+```python
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
+
+base = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-3B-Instruct", torch_dtype="bfloat16", device_map="auto")
+model = PeftModel.from_pretrained(base, "IntelligenceLab/saber-attack-agent-task-failure")
+```
 
 ## Attack Examples
 
